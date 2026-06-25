@@ -36,6 +36,22 @@
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
 
+        <!-- Spring Security: filter chain + authorization. Adding this starter flips the app
+             to DENY-BY-DEFAULT (every endpoint needs auth) until SecurityConfig says otherwise. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- OAuth2 Resource Server: gives us the BearerTokenAuthenticationFilter that reads the
+             "Authorization: Bearer <jwt>" header and validates the token via a JwtDecoder bean.
+             Pulls in Nimbus JOSE for the actual sign/verify. We issue our OWN tokens (no external
+             IdP) - "resource server" here just means "this service validates JWTs on requests". -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
+
         <!-- PostgreSQL driver (version managed by the Boot BOM) -->
         <dependency>
             <groupId>org.postgresql</groupId>
@@ -54,6 +70,15 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring Security test support: the standard companion to starter-security. Gives us
+             SecurityMockMvcRequestPostProcessors.jwt() so MockMvc tests can present a fake-but-
+             valid Authentication without minting a real signed token. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

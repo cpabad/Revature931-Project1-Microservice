@@ -6,6 +6,9 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.web.servlet.MockMvc;
 
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -23,9 +26,17 @@ class RoleControllerTest {
 
     @Test
     void getAllRoles_returnsSeededRoles() throws Exception {
-        mockMvc.perform(get("/roles"))
+        // GET /roles is now Supervisor-only (via @PreAuthorize), so present that authority.
+        mockMvc.perform(get("/roles").with(jwt().authorities(new SimpleGrantedAuthority("ROLE_Supervisor"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[?(@.role == 'Employee')]").exists())
                 .andExpect(jsonPath("$[?(@.role == 'Supervisor')]").exists());
+    }
+
+    /** Proves the deny-by-default lockdown: no Bearer token -> 401, no controller reached. */
+    @Test
+    void getAllRoles_withoutToken_isUnauthorized() throws Exception {
+        mockMvc.perform(get("/roles"))
+                .andExpect(status().isUnauthorized());
     }
 }

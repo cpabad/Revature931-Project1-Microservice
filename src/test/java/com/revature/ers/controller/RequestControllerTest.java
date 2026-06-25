@@ -6,6 +6,9 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.web.servlet.MockMvc;
 
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -23,7 +26,8 @@ class RequestControllerTest {
 
     @Test
     void getAll_serializesGraphAndHidesPassword() throws Exception {
-        mockMvc.perform(get("/requests"))
+        // GET /requests is now Supervisor-only, so this data-shape check presents that authority.
+        mockMvc.perform(get("/requests").with(jwt().authorities(new SimpleGrantedAuthority("ROLE_Supervisor"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].requestId").exists())
                 // nested entity comes back through the graph...
@@ -34,7 +38,7 @@ class RequestControllerTest {
 
     @Test
     void getById_returnsSeededRequestOne() throws Exception {
-        mockMvc.perform(get("/requests/1"))
+        mockMvc.perform(get("/requests/1").with(jwt()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.requestId").value(1))
                 .andExpect(jsonPath("$.requestedEvent").value("Anime Convention"))
@@ -44,7 +48,7 @@ class RequestControllerTest {
 
     @Test
     void getByRequester_filtersByUser() throws Exception {
-        mockMvc.perform(get("/requests/requester/2"))
+        mockMvc.perform(get("/requests/requester/2").with(jwt()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].requester.userId").value(2));
     }
