@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The SOAP contract, and the single source of truth for it: xjc generates the Java payload
+     classes from this file at build time, and DefaultWsdl11Definition serves the WSDL generated
+     from it at /ws/requests.wsdl. The fields mirror what POST /requests takes over REST - a
+     reimbursement request submission - plus the requester's id, which a REST caller proves via
+     JWT but a legacy partner ASSERTS (see the trust note on the endpoint class). -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:tns="http://revature.com/ers/soap/requests"
+           targetNamespace="http://revature.com/ers/soap/requests"
+           elementFormDefault="qualified">
+
+    <xs:element name="submitReimbursementRequest">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="requesterUserId" type="xs:int"/>
+                <xs:element name="amount" type="xs:double"/>
+                <xs:element name="eventDate" type="xs:date"/>
+                <xs:element name="eventLocationId" type="xs:int"/>
+                <xs:element name="requestedEvent" type="xs:string"/>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:element name="submitReimbursementResponse">
+        <xs:complexType>
+            <xs:sequence>
+                <!-- accepted = "queued for processing", NOT "persisted": the pipeline is
+                     asynchronous, so the partner gets a correlation id, not a request id. -->
+                <xs:element name="accepted" type="xs:boolean"/>
+                <xs:element name="correlationId" type="xs:string"/>
+                <xs:element name="message" type="xs:string"/>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+</xs:schema>
