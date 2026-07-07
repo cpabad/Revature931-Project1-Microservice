@@ -1,0 +1,23 @@
+# Exposes auth-service OUTSIDE the cluster. K3s bundles Traefik as its default ingress controller,
+# so this needs no extra install. Add a hosts-file line so the host resolves locally:
+#   echo "127.0.0.1 ers.local" | sudo tee -a /etc/hosts
+# then: curl -X POST http://ers.local/login -H 'Content-Type: application/json' -d '{...}'
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ers-ingress
+  namespace: ers
+spec:
+  rules:
+    - host: ers.local
+      http:
+        paths:
+          # only auth-service exists in this template; the gateway would take "/" once the full
+          # stack is in the cluster (the gateway becomes the single Ingress backend then).
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: auth-service
+                port:
+                  number: 8081

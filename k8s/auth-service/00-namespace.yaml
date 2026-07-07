@@ -1,0 +1,6 @@
+# Everything for this slice lives in one namespace, so `kubectl -n ers ...` (or deleting the
+# namespace) scopes the whole app. Namespaces are the first isolation boundary in Kubernetes.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ers
