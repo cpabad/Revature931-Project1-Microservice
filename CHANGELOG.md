@@ -81,3 +81,22 @@ Two findings the port surfaced:
 Tests 17 → 26, all green. The write tests are `@Transactional` so every insert/update rolls back
 — the shared seed (which the monolith's integration tests treat as the spec) stays byte-identical,
 verified by row counts and status spot-checks after the run.
+
+### Profile self-service — the last capability, with deliberately cleaner semantics
+`PUT /users/me` ports the monolith's `UserService.updateProfile`, redesigned rather than
+translated (the one slice where the monolith's behavior was NOT worth keeping):
+
+- **One identity gate.** `currentPassword` authorizes the whole form (the monolith demanded the
+  old value of each field being changed, but only the password check actually proved identity).
+- **Conflicts are explicit.** A taken username/email returns **409**; the monolith silently
+  skipped the change and still reported success (a quirk its tests pin as documentation).
+  The uniqueness check ignores the caller's own row — resubmitting your current username is not
+  a conflict.
+- **`/me` only.** The subject comes from the JWT; there is no user-id parameter to tamper with.
+- Wrong password → 403; nothing to update → 400; rejected forms change nothing (checks precede
+  all mutation, inside one transaction).
+
+Implementation notes: `ProfileUpdateResult` is a record wrapping a status enum; the controller
+maps it with a Java 17 exhaustive `switch` expression (add a status, the compile breaks until it
+is handled). Tests stamp user 3 with a known bcrypt hash inside the rolled-back test transaction,
+since the seed's plaintexts are unrecorded. Tests 26 → 34, all green.

@@ -16,4 +16,9 @@ import java.util.Optional;
 public interface UserRepository extends JpaRepository<User, Integer> {
 
     Optional<User> findByUsername(String username);
+
+    /** "Taken by someone else" - the profile update must not trip over the user's own current value. */
+    boolean existsByUsernameAndUserIdNot(String username, int userId);
+
+    boolean existsByEmailAndUserIdNot(String email, int userId);
 }

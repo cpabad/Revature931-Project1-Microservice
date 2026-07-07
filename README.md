@@ -83,6 +83,7 @@ Login mints a token; every other request must carry it.
 | `POST /requests` | authenticated | submit for yourself (requester = token subject); fans out the approval chain; 201 |
 | `PUT /requests/{id}/approval` | **Supervisor** | apply your approve/deny; returns `{"outcome": APPROVED\|DENIED\|ESCALATED\|WAITING_ON_OTHERS}`; 404 no vote, 409 waiting |
 | `GET /approvals/pending` | **Supervisor** | your still-pending votes (the approval inbox) |
+| `PUT /users/me` | authenticated | update own username/email/password; requires `currentPassword`; 403 wrong password, 409 taken value |
 | `GET /roles` | **Supervisor** | reference data |
 
 Unauthenticated → **401** ("who are you?"); authenticated but wrong role → **403** ("not allowed").
