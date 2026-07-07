@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: ers-gateway
+  cloud:
+    gateway:
+      routes:
+        # Identity capability -> auth-service. The gateway matches on PATH ONLY and forwards
+        # everything (headers included, so the Bearer token rides along untouched).
+        - id: auth-service
+          uri: ${AUTH_SERVICE_URL:http://localhost:8081}
+          predicates:
+            - Path=/login,/users/**,/roles/**
+        # Reimbursement capability -> reimbursement-service.
+        - id: reimbursement-service
+          uri: ${REIMB_SERVICE_URL:http://localhost:8082}
+          predicates:
+            - Path=/requests/**,/approvals/**
+
+# The system's single public port; the services' 8081/8082 stay internal in a real deployment.
+server:
+  port: 8080

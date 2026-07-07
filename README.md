@@ -1,99 +1,130 @@
-# ERS Microservice (`ers-service`)
+# ERS Microservices
 
-A Spring Boot 3 / Java 17 microservice for the **Employee Reimbursement System (ERS)** — the
-Phase 4 refactor of a legacy Java 8 / JDBC / Hibernate / standalone-Tomcat monolith into a
-single, independently deployable service. Decomposed by **business capability**, with hand-rolled
-DAOs replaced by Spring Data JPA and hand-rolled `HttpSession` servlet filters replaced by
-Spring Security + a **self-issued JWT**.
+The **Employee Reimbursement System (ERS)**, decomposed into real services — the endpoint of the
+Phase 4 refactor that began as a legacy Java 8 / JDBC / Hibernate / standalone-Tomcat monolith,
+became a single Spring Boot service, and now runs as **three independently deployable apps behind
+a gateway**:
+
+```
+                        ┌──────────────────────┐
+   client ──── :8080 ──▶│      ers-gateway      │   Spring Cloud Gateway (reactive)
+                        └──────────┬───────────┘   routes by path, forwards the Bearer token
+                     /login /users/** /roles/**  /requests/** /approvals/**
+                          ▼                            ▼
+              ┌────────────────────┐        ┌──────────────────────────┐
+              │  ers-auth-service   │        │ ers-reimbursement-service │
+              │  :8081  (issuer)    │        │  :8082  (resource server) │
+              │  login → mints JWT  │        │  requests / approvals /   │
+              │  profile, roles     │        │  reimbursements           │
+              │  OWNS users, roles  │        │  reads users read-only    │
+              └─────────┬──────────┘        └────────────┬─────────────┘
+                        └───────────── PostgreSQL ───────┘
+                              (shared DB, ownership per service)
+```
 
 > **Full history & the monolith it came from:** [`cpabad/Christian-Project1`](https://github.com/cpabad/Christian-Project1)
-> — that repo holds the original monolith, the hardening/refresh changelog, and the
-> monolith→microservice journey. This repo is the go-forward home of the service itself.
+> — the original monolith, its hardening/refresh changelog, and the monolith→microservice journey.
 
 ## Stack
 
 | Concern | Choice |
 |---|---|
-| Framework | Spring Boot 3.3.5 (Jakarta EE namespace) |
-| Language / build | Java 17, compiled on JDK 21 |
+| Framework | Spring Boot 3.3.6 (3.3.6 minimum: Gateway 4.1.6 needs Framework 6.1.15) |
+| Gateway | Spring Cloud Gateway (release train 2023.0.5) |
+| Language / build | Java 17, compiled on JDK 21; Maven multi-module |
 | Persistence | Spring Data JPA + Hibernate, PostgreSQL |
-| Security | Spring Security OAuth2 **resource server**, self-issued **HS256** JWT |
-| Passwords | BCrypt (carried over from the monolith's `loginpassword` hashes) |
-| Tests | JUnit 5 + Spring Test (MockMvc), against the seeded DB |
+| Security | Self-issued **HS256 JWT**: auth-service mints, every service validates (shared secret) |
+| Passwords | BCrypt (hashes carried over from the monolith seed) |
+| Tests | JUnit 5 + MockMvc per service; write tests are `@Transactional` (roll back, seed stays pristine) |
+
+## The service boundary, in one paragraph
+
+`ers-auth-service` **owns identity**: it holds the only `JwtEncoder`, the only BCrypt verification,
+and the only write access to `users`/`roles`. `ers-reimbursement-service` is a **pure resource
+server**: it validates tokens it could never mint (HS256 symmetry via the shared secret) and maps
+`users` **read-only, without the password column** — the credential physically cannot leak from a
+service that never loads it. The gateway routes by path and passes the Bearer token through
+untouched: authorization stays with the service that owns the resource, so a compromised gateway
+cannot mint identities. Sharing one database with documented per-service ownership is the training
+step before the full lesson (separate databases per service).
 
 ## Prerequisites
 
-- **A JDK 17+ _with a compiler_.** Boot 3 needs a Java 17+ `javac`. A JRE won't do (no `javac`);
-  this project was built on a portable Temurin **JDK 21**. Point `JAVA_HOME` at a real JDK.
+- **A JDK 17+ with a compiler** (built on a portable Temurin JDK 21 — a JRE has no `javac`).
 - **PostgreSQL** with the ERS schema seeded (below).
 
 ## Database setup
 
-The service runs `ddl-auto=validate` — it never creates or mutates the schema, only checks its
-entities against an existing one. Stand the schema up from the bundled dump:
+Both services run `ddl-auto=validate` — they never create or mutate the schema. Stand it up from
+the bundled dump:
 
 ```bash
-# 1. a database + login role the service connects as
 createdb ers
 psql -d postgres -c "CREATE ROLE ers LOGIN PASSWORD 'ers';"
-
-# 2. the ERS schema "ExpenseReimbursementManagementSystem" + seed data
 psql -d ers -f db/ers_script.sql
 ```
 
-The schema name is mixed-case (`"ExpenseReimbursementManagementSystem"`) and is mapped explicitly
-in the entities, so the as-is (non-snake_case) Hibernate naming strategy is configured to match.
-
-## Build & run
-
-The datasource and JWT secret are read from environment variables:
+## Build, test, run
 
 ```bash
 export JAVA_HOME="/path/to/jdk-21"
 export dburl="jdbc:postgresql://localhost:5432/ers"
 export dbuser=ers
 export dbpassword=ers
-# Optional: HS256 needs a >=32-char secret. Defaults to a dev placeholder if unset.
+# HS256 needs a >=32-char secret; BOTH services must get the SAME value (auth signs, reimb verifies).
 export ERS_JWT_SECRET="change-me-to-a-32+-char-random-secret"
 
-mvn test            # 26 tests, all green (write tests roll back; the seed stays pristine)
-mvn spring-boot:run # serves on http://localhost:8080
+mvn test          # all three modules: gateway route config + 32 service tests, green
+mvn package -DskipTests
+
+# three terminals (or background each):
+java -jar auth-service/target/ers-auth-service-0.0.1-SNAPSHOT.jar                    # :8081
+java -jar reimbursement-service/target/ers-reimbursement-service-0.0.1-SNAPSHOT.jar  # :8082
+java -jar gateway/target/ers-gateway-0.0.1-SNAPSHOT.jar                              # :8080
+```
+
+> If the monolith's standalone Tomcat is running locally it already owns 8080 — start the gateway
+> with `--server.port=9080` (routes are unaffected; they target 8081/8082 directly).
+
+Smoke test through the front door:
+
+```bash
+TOKEN=$(curl -s -X POST localhost:8080/login -H 'Content-Type: application/json' \
+        -d '{"username":"<user>","password":"<pass>"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+curl -s localhost:8080/requests -H "Authorization: Bearer $TOKEN"   # gateway -> reimbursement-service
+curl -s localhost:8080/roles    -H "Authorization: Bearer $TOKEN"   # gateway -> auth-service
 ```
 
 ## Auth model
 
-Login mints a token; every other request must carry it.
+1. `POST /login` (auth-service, via the gateway) verifies the BCrypt hash and returns a signed JWT
+   (`sub`=userId, `role` claim, `iss`/`iat`/`exp`).
+2. Every other request carries `Authorization: Bearer <token>`. **Each service validates the
+   signature itself** — the gateway does not authenticate; it forwards.
+3. Roles enforced per service: path rules in each service's `SecurityConfig`, plus `@PreAuthorize`
+   on `GET /roles`. Unauthenticated → **401**; authenticated but wrong role → **403**.
 
-1. `POST /login` with `{"username","password"}` → verifies the BCrypt hash, returns a signed JWT
-   (`sub`=userId, `role` claim = `"Supervisor"`/`"Employee"`, plus `iss`/`iat`/`exp`).
-2. Send it on subsequent calls as `Authorization: Bearer <token>`. Spring's resource-server filter
-   validates the signature + expiry on every request — the service holds **no session** (stateless).
-3. Roles are enforced two ways: URL rules (`authorizeHttpRequests`) and method security
-   (`@PreAuthorize`). `hasRole('Supervisor')` checks the `ROLE_Supervisor` authority the JWT
-   converter derives from the `role` claim.
+### Endpoints (all through the gateway on :8080)
 
-### Endpoints
-
-| Method & path | Access | Notes |
-|---|---|---|
-| `POST /login` | public | mint a JWT |
-| `GET /requests` | **Supervisor** | all employees' requests |
-| `GET /requests/{id}` | authenticated | one request |
-| `GET /requests/requester/{userId}` | authenticated | a user's requests |
-| `POST /requests` | authenticated | submit for yourself (requester = token subject); fans out the approval chain; 201 |
-| `PUT /requests/{id}/approval` | **Supervisor** | apply your approve/deny; returns `{"outcome": APPROVED\|DENIED\|ESCALATED\|WAITING_ON_OTHERS}`; 404 no vote, 409 waiting |
-| `GET /approvals/pending` | **Supervisor** | your still-pending votes (the approval inbox) |
-| `PUT /users/me` | authenticated | update own username/email/password; requires `currentPassword`; 403 wrong password, 409 taken value |
-| `GET /roles` | **Supervisor** | reference data |
-
-Unauthenticated → **401** ("who are you?"); authenticated but wrong role → **403** ("not allowed").
+| Method & path | Service | Access | Notes |
+|---|---|---|---|
+| `POST /login` | auth | public | mint a JWT |
+| `PUT /users/me` | auth | authenticated | update own username/email/password; requires `currentPassword`; 403 wrong password, 409 taken value |
+| `GET /roles` | auth | **Supervisor** | reference data |
+| `GET /requests` | reimbursement | **Supervisor** | all employees' requests |
+| `GET /requests/{id}` | reimbursement | authenticated | one request |
+| `GET /requests/requester/{userId}` | reimbursement | authenticated | a user's requests |
+| `POST /requests` | reimbursement | authenticated | submit for yourself (requester = token subject); fans out the approval chain; 201 |
+| `PUT /requests/{id}/approval` | reimbursement | **Supervisor** | apply your approve/deny; returns `{"outcome": ...}`; 404 no vote, 409 waiting |
+| `GET /approvals/pending` | reimbursement | **Supervisor** | your still-pending votes (the approval inbox) |
 
 ## Configuration
 
-| Property | Env var | Default |
-|---|---|---|
-| `spring.datasource.url` | `dburl` | — |
-| `spring.datasource.username` | `dbuser` | — |
-| `spring.datasource.password` | `dbpassword` | — |
-| `ers.jwt.secret` | `ERS_JWT_SECRET` | dev-only placeholder (override in prod) |
-| `ers.jwt.ttl-seconds` | `ERS_JWT_TTL_SECONDS` | `3600` |
+| Property | Env var | Default | Used by |
+|---|---|---|---|
+| `spring.datasource.url` | `dburl` | — | auth, reimbursement |
+| `spring.datasource.username` | `dbuser` | — | auth, reimbursement |
+| `spring.datasource.password` | `dbpassword` | — | auth, reimbursement |
+| `ers.jwt.secret` | `ERS_JWT_SECRET` | dev-only placeholder | auth (signs) + reimbursement (verifies) |
+| `ers.jwt.ttl-seconds` | `ERS_JWT_TTL_SECONDS` | `3600` | auth only (issuer concern) |
+| route targets | `AUTH_SERVICE_URL`, `REIMB_SERVICE_URL` | `localhost:8081/8082` | gateway |

@@ -100,3 +100,40 @@ Implementation notes: `ProfileUpdateResult` is a record wrapping a status enum; 
 maps it with a Java 17 exhaustive `switch` expression (add a status, the compile breaks until it
 is handled). Tests stamp user 3 with a known bcrypt hash inside the rolled-back test transaction,
 since the seed's plaintexts are unrecorded. Tests 26 → 34, all green.
+
+### The service split — gateway + auth-service + reimbursement-service
+The first genuine service boundary: the single Boot app becomes a Maven multi-module reactor with
+three independently deployable applications, in the shape of the Chronicle reference architecture.
+
+- **`ers-auth-service` (:8081) owns identity.** Login (the system's only `JwtEncoder`), profile
+  self-service, roles reference data, and the only write access to `users`/`roles`. Package
+  `com.revature.ers.auth`.
+- **`ers-reimbursement-service` (:8082) owns the domain.** Requests, the approval chain,
+  reimbursements — as a **pure resource server**: it validates tokens it cannot mint (HS256
+  symmetry, shared secret) and maps `users` **read-only without the password column**, so the
+  credential physically cannot leak from it. Duplicating a trimmed entity per service instead of
+  sharing a domain library is deliberate microservice orthodoxy: duplication over coupling.
+- **`ers-gateway` (:8080).** Spring Cloud Gateway routes by path (`/login`,`/users/**`,`/roles/**`
+  → auth; `/requests/**`,`/approvals/**` → reimbursement) and forwards the Bearer token untouched
+  — each service authorizes its own resources, so a compromised gateway cannot mint identities.
+- **Shared DB with documented ownership** (the chosen training step before databases-per-service).
+
+**Verified two ways.** Per-service test suites (33 tests: 16 auth, 16 reimbursement, 1 gateway
+route config), plus a **live end-to-end smoke test**: all three JVMs running, login through the
+gateway, then one token exercising routes proxied to BOTH services (200/200/200), no token → 401,
+unrouted path → 404. The upgraded `AuthorizationRulesTest` doubles as a cross-service contract
+test — it mints tokens with its own Nimbus encoder from the shared secret, proving an externally
+minted token validates in a service that has no encoder.
+
+**Two traps worth recording:**
+- **Version skew, invisible until runtime.** Spring Cloud Gateway 4.1.6 (train 2023.0.5) calls
+  `HttpHeaders.headerSet()`, which only exists from Spring Framework 6.1.15 — Boot 3.3.5 ships
+  6.1.14. The gateway *starts cleanly* and throws `NoSuchMethodError` on the **first proxied
+  request**. Fix: Boot parent 3.3.5 → 3.3.6. Lesson: BOM alignment bugs can hide behind a green
+  startup; smoke-test the actual request path.
+- **Port 8080 was already taken** on the dev box — by the monolith's own standalone Tomcat. The
+  smoke test runs the gateway on 9080; the README notes the flag.
+
+The smoke test needed a known password (the seed's bcrypt plaintexts are unrecorded): it stamps
+user 1 with a known hash, runs, and restores the original **byte-identical** (verified) — the
+shared seed stays the monolith tests' source of truth.
