@@ -1,0 +1,84 @@
+# The whole system, one command: `docker compose up --build`
+#
+#   gateway (:8080 published)  ->  auth-service (:8081, internal)          -> auth-db
+#                              ->  reimbursement-service (:8082, internal) -> reimbursement-db
+#
+# Databases-per-service made literal: two postgres containers, each seeded by its
+# service's own init script (the same scripts local dev uses). Only the gateway is
+# published to the host - the services and databases stay on the compose network.
+#
+# If host port 8080 is taken (e.g. the monolith's Tomcat): GATEWAY_PORT=9080 docker compose up
+
+services:
+  auth-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ers_auth
+      POSTGRES_USER: ers
+      POSTGRES_PASSWORD: ers
+    volumes:
+      # postgres runs every script in this directory on FIRST start of an empty data dir
+      - ./db/auth:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ers -d ers_auth"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  reimbursement-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ers_reimbursement
+      POSTGRES_USER: ers
+      POSTGRES_PASSWORD: ers
+    volumes:
+      - ./db/reimbursement:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ers -d ers_reimbursement"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  auth-service:
+    build:
+      context: .
+      args:
+        MODULE: auth-service
+    environment:
+      AUTH_DB_URL: jdbc:postgresql://auth-db:5432/ers_auth
+      AUTH_DB_USER: ers
+      AUTH_DB_PASSWORD: ers
+      # BOTH services must see the SAME secret (auth signs, reimbursement verifies).
+      ERS_JWT_SECRET: ${ERS_JWT_SECRET:-dev-only-insecure-ers-jwt-secret-change-me-32+}
+    depends_on:
+      auth-db:
+        condition: service_healthy
+
+  reimbursement-service:
+    build:
+      context: .
+      args:
+        MODULE: reimbursement-service
+    environment:
+      REIMB_DB_URL: jdbc:postgresql://reimbursement-db:5432/ers_reimbursement
+      REIMB_DB_USER: ers
+      REIMB_DB_PASSWORD: ers
+      ERS_JWT_SECRET: ${ERS_JWT_SECRET:-dev-only-insecure-ers-jwt-secret-change-me-32+}
+    depends_on:
+      reimbursement-db:
+        condition: service_healthy
+
+  gateway:
+    build:
+      context: .
+      args:
+        MODULE: gateway
+    environment:
+      # service names resolve on the compose network - no localhost inside containers
+      AUTH_SERVICE_URL: http://auth-service:8081
+      REIMB_SERVICE_URL: http://reimbursement-service:8082
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      - auth-service
+      - reimbursement-service

@@ -160,3 +160,24 @@ legacy `db/ers_script.sql` dump, kept for history/monolith parity) is retired fo
 smoke test — login answered solely from `ers_auth`, request JSON built from the password-less
 copy (`"password" in requester -> False`), and a submitted request fanned out in
 `ers_reimbursement` with the identity sequence continuing past the seed.
+
+### Containerized — one Dockerfile, five containers, one command
+The Chronicle-shaped deployment: `docker compose up --build` starts two seeded postgres
+containers (each running its service's own `init.sql` on first start) plus the three services,
+with **only the gateway published to the host** — the services and databases exist solely on the
+compose network, which is the network-level spelling of "internal".
+
+- **One parameterized Dockerfile** for all three images: compose passes `MODULE` as a build arg,
+  so the recipe lives in one place. Multi-stage — Maven + JDK in the build stage, a bare JRE at
+  runtime (no compiler, no source in the shipped image) — running as a non-root user, with a
+  BuildKit cache mount so the Maven repo downloads once across all three builds.
+- Inside the network, config swaps hostnames, not shapes: `AUTH_DB_URL=jdbc:postgresql://auth-db:...`,
+  `AUTH_SERVICE_URL=http://auth-service:8081` — the same env vars local dev uses with localhost.
+- `GATEWAY_PORT=9080 docker compose up` for hosts where 8080 is taken (the dev box's monolith Tomcat).
+
+**Verification status, honestly:** Docker is not installed on the dev box, so the containers have
+not been executed. What IS verified: the compose YAML parses; the init scripts it mounts are the
+exact scripts the live three-JVM smoke test ran against (scratch cluster, port 5433); and the
+env-var wiring it sets is the same wiring that smoke test exercised. First `docker compose up`
+on a Docker-equipped machine is the remaining step, and would be the first true test of the
+Dockerfile build stage.

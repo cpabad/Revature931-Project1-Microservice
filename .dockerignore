@@ -1,0 +1,7 @@
+# Keep the build context lean: the image build needs sources + poms, nothing else.
+.git
+.claude
+**/target
+db
+*.md
+*.log
