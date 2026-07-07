@@ -39,6 +39,27 @@ services:
       timeout: 3s
       retries: 12
 
+  # Single-node Kafka in KRaft mode (no ZooKeeper). Carries the SOAP adapter's submission
+  # events to reimbursement-service; internal-only like the databases.
+  kafka:
+    image: apache/kafka:3.8.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   auth-service:
     build:
       context: .
@@ -63,9 +84,23 @@ services:
       REIMB_DB_URL: jdbc:postgresql://reimbursement-db:5432/ers_reimbursement
       REIMB_DB_USER: ers
       REIMB_DB_PASSWORD: ers
+      KAFKA_BOOTSTRAP: kafka:9092
       ERS_JWT_SECRET: ${ERS_JWT_SECRET:-dev-only-insecure-ers-jwt-secret-change-me-32+}
     depends_on:
       reimbursement-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  soap-adapter:
+    build:
+      context: .
+      args:
+        MODULE: soap-adapter
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+    depends_on:
+      kafka:
         condition: service_healthy
 
   gateway:
@@ -77,8 +112,10 @@ services:
       # service names resolve on the compose network - no localhost inside containers
       AUTH_SERVICE_URL: http://auth-service:8081
       REIMB_SERVICE_URL: http://reimbursement-service:8082
+      SOAP_SERVICE_URL: http://soap-adapter:8083
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
     depends_on:
       - auth-service
       - reimbursement-service
+      - soap-adapter

@@ -24,14 +24,16 @@ class GatewayRoutesTest {
     private RouteLocator routeLocator;
 
     @Test
-    void definesBothServiceRoutes() {
+    void definesAllServiceRoutes() {
         List<Route> routes = routeLocator.getRoutes().collectList().block();
         List<String> ids = Objects.requireNonNull(routes).stream().map(Route::getId).toList();
 
-        assertEquals(2, routes.size());
+        assertEquals(3, routes.size());
         assertTrue(ids.contains("auth-service"));
         assertTrue(ids.contains("reimbursement-service"));
+        assertTrue(ids.contains("soap-adapter"));
         assertTrue(routes.stream().anyMatch(r -> r.getUri().toString().contains("8081")));
         assertTrue(routes.stream().anyMatch(r -> r.getUri().toString().contains("8082")));
+        assertTrue(routes.stream().anyMatch(r -> r.getUri().toString().contains("8083")));
     }
 }

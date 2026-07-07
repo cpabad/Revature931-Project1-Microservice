@@ -28,6 +28,7 @@
         <module>gateway</module>
         <module>auth-service</module>
         <module>reimbursement-service</module>
+        <module>soap-adapter</module>
     </modules>
 
     <properties>

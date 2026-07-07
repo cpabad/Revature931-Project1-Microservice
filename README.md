@@ -6,21 +6,21 @@ became a single Spring Boot service, and now runs as **three independently deplo
 a gateway**:
 
 ```
-                        ┌──────────────────────┐
-   client ──── :8080 ──▶│      ers-gateway      │   Spring Cloud Gateway (reactive)
-                        └──────────┬───────────┘   routes by path, forwards the Bearer token
-                     /login /users/** /roles/**  /requests/** /approvals/**
-                          ▼                            ▼
-              ┌────────────────────┐        ┌──────────────────────────┐
-              │  ers-auth-service   │        │ ers-reimbursement-service │
-              │  :8081  (issuer)    │        │  :8082  (resource server) │
-              │  login → mints JWT  │        │  requests / approvals /   │
-              │  profile, roles     │        │  reimbursements           │
-              │  OWNS users, roles  │        │  password-less users copy │
-              └─────────┬──────────┘        └────────────┬─────────────┘
-                        ▼                                ▼
-                  ers_auth DB                   ers_reimbursement DB
-              (db/auth/init.sql)             (db/reimbursement/init.sql)
+                                ┌──────────────────────┐
+   REST + SOAP ────── :8080 ───▶│      ers-gateway      │  Spring Cloud Gateway (reactive)
+                                └──────────┬───────────┘  routes by path, forwards headers
+             /login /users/** /roles/**    │    /requests/** /approvals/**       /ws/**
+                     ▼                     ▼                                       ▼
+        ┌────────────────────┐   ┌──────────────────────────┐          ┌──────────────────────┐
+        │  ers-auth-service   │   │ ers-reimbursement-service │          │   ers-soap-adapter    │
+        │  :8081  (issuer)    │   │  :8082 (resource server)  │          │  :8083 (no database)  │
+        │  login → mints JWT  │   │  requests / approvals /   │          │  legacy SOAP intake   │
+        │  profile, roles     │   │  reimbursements + Kafka   │          │  → JSON event         │
+        │  OWNS users, roles  │   │  consumer                 │          └──────────┬───────────┘
+        └─────────┬──────────┘   └─────┬──────────▲─────────┘                     │
+                  ▼                    ▼          │     reimbursement.request.submitted
+            ers_auth DB     ers_reimbursement DB  └────────────── Kafka ◀──────────┘
+        (db/auth/init.sql)  (db/reimbursement/init.sql)
 ```
 
 **Databases-per-service:** no cross-database joins exist. `ers_reimbursement` carries a
@@ -41,7 +41,9 @@ its autonomy with).
 | Gateway | Spring Cloud Gateway (release train 2023.0.5) |
 | Language / build | Java 17, compiled on JDK 21; Maven multi-module |
 | Persistence | Spring Data JPA + Hibernate; **one PostgreSQL database per service** |
-| Containers | Dockerfile (multi-stage, one recipe for all three) + docker-compose (5 containers) |
+| Messaging | Apache Kafka (spring-kafka); JSON events, each side owns its event record |
+| Legacy intake | Spring-WS contract-first SOAP (XSD → xjc classes; WSDL served at runtime) |
+| Containers | Dockerfile (multi-stage, one recipe for all services) + docker-compose (7 containers) |
 | Security | Self-issued **HS256 JWT**: auth-service mints, every service validates (shared secret) |
 | Passwords | BCrypt (hashes carried over from the monolith seed) |
 | Tests | JUnit 5 + MockMvc per service; write tests are `@Transactional` (roll back, seed stays pristine) |
@@ -97,7 +99,8 @@ export JAVA_HOME="/path/to/jdk-21"
 # HS256 needs a >=32-char secret; BOTH services must get the SAME value (auth signs, reimb verifies).
 export ERS_JWT_SECRET="change-me-to-a-32+-char-random-secret"
 
-mvn test          # all three modules: gateway route config + 32 service tests, green
+mvn test          # all modules, 36 tests green (Kafka tests run against an embedded in-JVM broker;
+                  # a real broker is only needed at runtime - localhost:9092 or KAFKA_BOOTSTRAP)
 mvn package -DskipTests
 
 # three terminals (or background each):
@@ -116,6 +119,38 @@ TOKEN=$(curl -s -X POST localhost:8080/login -H 'Content-Type: application/json'
         -d '{"username":"<user>","password":"<pass>"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
 curl -s localhost:8080/requests -H "Authorization: Bearer $TOKEN"   # gateway -> reimbursement-service
 curl -s localhost:8080/roles    -H "Authorization: Bearer $TOKEN"   # gateway -> auth-service
+```
+
+## The asynchronous intake (SOAP → Kafka → domain)
+
+Legacy partners submit reimbursement requests as SOAP — the protocol B2B integrations actually
+still speak. The adapter is an **anti-corruption layer**: it keeps XML at the edge, translates a
+valid submission into a JSON event on `reimbursement.request.submitted`, and acknowledges with a
+correlation id. reimbursement-service consumes the topic and runs the **same `RequestService.submit`
+fan-out the REST endpoint uses** — one domain rule, two transports. "Accepted" therefore means
+*queued*, not persisted: the pipeline is at-least-once and eventually consistent (the listener
+drops poison events with a log — production would use a dead-letter topic and de-duplicate
+replays on the correlation id).
+
+**Trust note:** a REST caller proves the requester's identity with a JWT; a SOAP partner *asserts*
+`requesterUserId` in the payload. Production would authenticate the partner itself (mTLS or
+WS-Security) and allowlist which user ids it may submit for — documented on the endpoint, out of
+scope here.
+
+```bash
+curl -s -X POST localhost:8080/ws -H 'Content-Type: text/xml' -d '<soapenv:Envelope
+  xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+  xmlns:req="http://revature.com/ers/soap/requests">
+  <soapenv:Body>
+    <req:submitReimbursementRequest>
+      <req:requesterUserId>3</req:requesterUserId>
+      <req:amount>88.25</req:amount>
+      <req:eventDate>2026-07-01</req:eventDate>
+      <req:eventLocationId>1</req:eventLocationId>
+      <req:requestedEvent>Partner Conference</req:requestedEvent>
+    </req:submitReimbursementRequest>
+  </soapenv:Body>
+</soapenv:Envelope>'
 ```
 
 ## Auth model
@@ -140,6 +175,8 @@ curl -s localhost:8080/roles    -H "Authorization: Bearer $TOKEN"   # gateway ->
 | `POST /requests` | reimbursement | authenticated | submit for yourself (requester = token subject); fans out the approval chain; 201 |
 | `PUT /requests/{id}/approval` | reimbursement | **Supervisor** | apply your approve/deny; returns `{"outcome": ...}`; 404 no vote, 409 waiting |
 | `GET /approvals/pending` | reimbursement | **Supervisor** | your still-pending votes (the approval inbox) |
+| `POST /ws` (SOAP) | soap-adapter | partner (no JWT — see trust note) | `submitReimbursementRequest` → acknowledged with a correlation id, processed asynchronously via Kafka |
+| `GET /ws/requests.wsdl` | soap-adapter | open | the machine-readable SOAP contract |
 
 ## Configuration
 
@@ -149,5 +186,6 @@ curl -s localhost:8080/roles    -H "Authorization: Bearer $TOKEN"   # gateway ->
 | reimbursement datasource | `REIMB_DB_URL` / `REIMB_DB_USER` / `REIMB_DB_PASSWORD` | `localhost:5432/ers_reimbursement`, `ers`/`ers` | reimbursement only |
 | `ers.jwt.secret` | `ERS_JWT_SECRET` | dev-only placeholder | auth (signs) + reimbursement (verifies) |
 | `ers.jwt.ttl-seconds` | `ERS_JWT_TTL_SECONDS` | `3600` | auth only (issuer concern) |
-| route targets | `AUTH_SERVICE_URL`, `REIMB_SERVICE_URL` | `localhost:8081/8082` | gateway |
+| Kafka broker | `KAFKA_BOOTSTRAP` | `localhost:9092` | soap-adapter (produce) + reimbursement (consume) |
+| route targets | `AUTH_SERVICE_URL`, `REIMB_SERVICE_URL`, `SOAP_SERVICE_URL` | `localhost:8081/8082/8083` | gateway |
 | gateway host port | `GATEWAY_PORT` (compose only) | `8080` | docker-compose |

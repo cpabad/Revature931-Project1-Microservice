@@ -15,6 +15,12 @@ spring:
           uri: ${REIMB_SERVICE_URL:http://localhost:8082}
           predicates:
             - Path=/requests/**,/approvals/**
+        # Legacy SOAP intake -> soap-adapter (SOAP is just HTTP POST XML; /ws/requests.wsdl
+        # serves the contract). The adapter has no JWT - see its trust-boundary note.
+        - id: soap-adapter
+          uri: ${SOAP_SERVICE_URL:http://localhost:8083}
+          predicates:
+            - Path=/ws/**
 
 # The system's single public port; the services' 8081/8082 stay internal in a real deployment.
 server:

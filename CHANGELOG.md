@@ -181,3 +181,37 @@ exact scripts the live three-JVM smoke test ran against (scratch cluster, port 5
 env-var wiring it sets is the same wiring that smoke test exercised. First `docker compose up`
 on a Docker-equipped machine is the remaining step, and would be the first true test of the
 Dockerfile build stage.
+
+### SOAP intake + Kafka — the asynchronous pipeline
+Legacy partners speak SOAP; the domain shouldn't have to. A fourth module, **`ers-soap-adapter`**
+(:8083, no database), is the anti-corruption layer: it accepts a contract-first SOAP submission,
+translates it into a JSON event on `reimbursement.request.submitted`, and acknowledges with a
+correlation id. reimbursement-service consumes the topic and runs the SAME `RequestService.submit`
+fan-out the REST endpoint uses — one domain rule, two transports, decoupled by the broker.
+
+- **Contract-first SOAP** (Spring-WS): `requests.xsd` is the single source of truth — xjc
+  generates the payload classes from it at build time, and the WSDL served at
+  `GET /ws/requests.wsdl` is generated from the same file at runtime. Dispatch is by payload
+  root element, not URL. The fields mirror `POST /requests` (the `Request` entity's submission
+  data) plus the requester id.
+- **Event contract by duplication**: each side owns its own `RequestSubmissionEvent` record —
+  the JSON field names are the contract, pinned textually by BOTH sides' tests (the producer
+  test reads the raw string off the broker; the consumer test feeds a raw string in). Producer
+  type headers are off; the consumer deserializes by its own class.
+- **Semantics documented as they are**: at-least-once; "accepted" = queued, not persisted;
+  poison events are logged and dropped (the training-wheels dead-letter topic); `submit` now
+  fails soft on an unknown requester (unreachable via REST's JWT, very reachable via a
+  partner-asserted id). **Trust boundary**: the partner asserts `requesterUserId`; production
+  would authenticate the partner (mTLS/WS-Security) + allowlist — noted on the endpoint.
+- Gateway routes `/ws/**` to the adapter; compose gains a single-node KRaft Kafka (internal,
+  like the databases) and the adapter container — 7 containers total.
+
+**Tests 33 → 36**, all green, Kafka exercised against a real in-JVM broker (`@EmbeddedKafka`).
+Two bugs the new tests caught before any human did:
+- **XPath boolean coercion**: `evaluatesTo(true)` on an element asserts "the node exists", so
+  the `accepted=false` assertion could never pass — and the `true` one passed vacuously. Fixed
+  to compare element TEXT (`evaluatesTo("false")`).
+- **Wire-format drift**: the producer's default mapper serialized `LocalDate` as `[2026,7,1]`
+  while the consumer contract pinned ISO-8601 `"2026-07-01"`. Caught by the producer-side raw-
+  JSON assertion — exactly the drift the textual contract tests exist for. Fixed by making the
+  event's `eventDate` a String, pinning ISO-8601 in the contract itself.

@@ -73,7 +73,13 @@ public class RequestService {
         if (location.isEmpty()) {
             return Optional.empty();
         }
-        User requester = userRepository.findById(requesterUserId).orElseThrow();
+        // Unknown requester is unreachable over REST (the JWT subject always exists) but very
+        // reachable via the Kafka intake, where a SOAP partner asserts the id - fail soft.
+        Optional<User> requesterFound = userRepository.findById(requesterUserId);
+        if (requesterFound.isEmpty()) {
+            return Optional.empty();
+        }
+        User requester = requesterFound.get();
         Request request = requestRepository.save(new Request(
                 null,
                 dto.amount(),
