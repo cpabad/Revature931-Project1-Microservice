@@ -75,6 +75,11 @@ public class SecurityConfig {
                 // "Supervisor") checks for the ROLE_Supervisor authority our converter produces.
                 // (Order matters - this more specific GET rule sits ABOVE the catch-all below.)
                 .requestMatchers(HttpMethod.GET, "/requests").hasRole("Supervisor")
+                // The approval chain is a supervisor capability: deciding a request and
+                // reading the pending-votes inbox. (POST /requests stays under the
+                // catch-all - any authenticated user may submit for themselves.)
+                .requestMatchers(HttpMethod.PUT, "/requests/*/approval").hasRole("Supervisor")
+                .requestMatchers("/approvals/**").hasRole("Supervisor")
                 .anyRequest().authenticated())
             // Turn on JWT validation, handing Spring our decoder + claim->authority converter.
             .oauth2ResourceServer(oauth2 -> oauth2
