@@ -36,9 +36,12 @@ class RequestControllerTest {
                 .andExpect(jsonPath("$[0].requester.password").doesNotExist());
     }
 
+    // Both routes now check ownership against the token subject, and the default jwt()
+    // subject is the non-numeric "user" - so these present the owner's real userId (2).
+
     @Test
     void getById_returnsSeededRequestOne() throws Exception {
-        mockMvc.perform(get("/requests/1").with(jwt()))
+        mockMvc.perform(get("/requests/1").with(jwt().jwt(j -> j.subject("2"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.requestId").value(1))
                 .andExpect(jsonPath("$.requestedEvent").value("Anime Convention"))
@@ -48,7 +51,7 @@ class RequestControllerTest {
 
     @Test
     void getByRequester_filtersByUser() throws Exception {
-        mockMvc.perform(get("/requests/requester/2").with(jwt()))
+        mockMvc.perform(get("/requests/requester/2").with(jwt().jwt(j -> j.subject("2"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].requester.userId").value(2));
     }

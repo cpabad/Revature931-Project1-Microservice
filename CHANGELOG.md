@@ -215,3 +215,24 @@ Two bugs the new tests caught before any human did:
   while the consumer contract pinned ISO-8601 `"2026-07-01"`. Caught by the producer-side raw-
   JSON assertion — exactly the drift the textual contract tests exist for. Fixed by making the
   event's `eventDate` a String, pinning ISO-8601 in the contract itself.
+
+### Object-level authorization — closing the IDOR on the request reads
+The two request-read routes were only `.anyRequest().authenticated()`, so any logged-in
+employee could read ANY employee's reimbursement requests (amounts, event details) by walking
+`GET /requests/{id}` ids or `GET /requests/requester/{userId}` userIds — broken object-level
+authorization (OWASP API Top 10 #1), and a regression from the monolith, which scoped these
+to the session user.
+
+- **Where the check lives**: in the controller, against the injected `JwtAuthenticationToken` —
+  NOT in `SecurityConfig`. The filter chain's path rules can express "who may hit this URL
+  shape" but not "who owns request 7"; ownership needs the loaded entity. `/requests/{id}` now
+  filters to owner-or-Supervisor; `/requests/requester/{userId}` rejects a mismatched caller
+  unless Supervisor.
+- **404 vs 403 is a security decision**: a foreign `/requests/{id}` returns **404**, because a
+  403 would confirm the id exists — an enumeration oracle for an id-walker. The by-requester
+  route returns an honest **403**: the caller supplied the userId themselves, so there is no
+  existence to leak.
+- **Tests as the contract** (`AuthorizationRulesTest`, 9): owner 200 / foreign employee 404 /
+  Supervisor 200 by id; own 200 / foreign 403 / Supervisor 200 by requester. The data-shape
+  tests now mint numeric subjects — the ownership check parses the JWT `sub` the same way
+  `POST /requests` always has.
