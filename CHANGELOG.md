@@ -215,3 +215,22 @@ Two bugs the new tests caught before any human did:
   while the consumer contract pinned ISO-8601 `"2026-07-01"`. Caught by the producer-side raw-
   JSON assertion — exactly the drift the textual contract tests exist for. Fixed by making the
   event's `eventDate` a String, pinning ISO-8601 in the contract itself.
+
+### Honest SOAP ack — the send result is now part of the answer
+`RequestSubmissionEndpoint` called `kafkaTemplate.send(...)` fire-and-forget: the returned
+future was ignored, so with the broker down the partner still received `accepted=true` plus a
+correlation id for an event that was never published — silent data loss wearing a receipt.
+
+- **Block on the future**: the endpoint now `get()`s the send result before answering; any
+  failure returns `accepted=false`, an EMPTY correlation id (nothing was published, so there
+  is nothing to correlate), and a retry-later message. The partner's call is synchronous
+  anyway, so the happy path pays nothing extra.
+- **Fail fast, not in two minutes**: the Kafka client's defaults would hang the synchronous
+  caller ~60s in metadata fetch (`max.block.ms`) and retry ~120s (`delivery.timeout.ms`)
+  before the future fails. Bounded to 5s/10s in application.properties; `acks=all` pinned so
+  "accepted" means the event survives a broker failure (the Kafka 3.x default via
+  idempotence, but the ack's honesty depends on it, so it is explicit).
+- **Two test styles on purpose**: the embedded-broker integration test can only prove the
+  happy path (its broker is up by definition); the broker-down nack is pinned by a plain
+  Mockito unit test feeding the endpoint a failed future. Live-drilled too: adapter started
+  with no broker answered `accepted=false` in 5.2s (`max.block.ms` firing).
