@@ -2,7 +2,7 @@ package com.revature.ers.auth.service;
 
 import com.revature.ers.auth.model.User;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
+import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.JwsHeader;
 import org.springframework.security.oauth2.jwt.JwtClaimsSet;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
@@ -46,8 +46,9 @@ public class TokenService {
                 .subject(String.valueOf(user.getUserId()))
                 .claim("role", user.getRole().getRole())
                 .build();
-        // HS256 must be named explicitly in the header so it matches the decoder's expectation.
-        JwsHeader header = JwsHeader.with(MacAlgorithm.HS256).build();
+        // RS256: signed with the private key from JwkConfig. Nimbus selects the key from the
+        // JWK set and stamps its kid into the header, so verifiers can pick the right public key.
+        JwsHeader header = JwsHeader.with(SignatureAlgorithm.RS256).build();
         return jwtEncoder.encode(JwtEncoderParameters.from(header, claims)).getTokenValue();
     }
 }

@@ -3,6 +3,10 @@ package com.revature.ers.controller;
 import com.revature.ers.dto.SubmitRequestDto;
 import com.revature.ers.model.Request;
 import com.revature.ers.service.RequestService;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -22,7 +26,7 @@ import java.util.List;
  * (requester, eventLocation, requestStatus) automatically; User.password stays out via
  * its @JsonIgnore.
  *
- *   GET  /requests                  -> all requests (Supervisor)
+ *   GET  /requests                  -> a PAGE of requests (Supervisor); ?page=&size=&sort=
  *   GET  /requests/{id}             -> one request (owner or Supervisor), or 404
  *   GET  /requests/requester/{uid}  -> a user's requests (that user or Supervisor)
  *   POST /requests                  -> submit for myself (requester = token subject)
@@ -45,9 +49,18 @@ public class RequestController {
         this.requestService = requestService;
     }
 
+    /**
+     * A PAGE of requests, not the whole table. The old unbounded findAll() was fine at 4 seed
+     * rows and an OOM at scale (the response, the Jackson buffer, and the eager entity graph all
+     * grow with row count). Pageable turns it into ?page=&size=&sort=; the default is 20 newest
+     * first, and size is HARD-CAPPED at 100 by spring.data.web.pageable.max-page-size - a client
+     * asking for ?size=100000 silently gets 100, so the cap cannot be bypassed from the query.
+     */
     @GetMapping
-    public ResponseEntity<List<Request>> getAll() {
-        return ResponseEntity.ok(requestService.findAll());
+    public ResponseEntity<Page<Request>> getAll(
+            @PageableDefault(size = 20, sort = "requestId", direction = Sort.Direction.DESC)
+            Pageable pageable) {
+        return ResponseEntity.ok(requestService.findAll(pageable));
     }
 
     @GetMapping("/{id}")

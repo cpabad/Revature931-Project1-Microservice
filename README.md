@@ -44,7 +44,7 @@ its autonomy with).
 | Messaging | Apache Kafka (spring-kafka); JSON events, each side owns its event record |
 | Legacy intake | Spring-WS contract-first SOAP (XSD → xjc classes; WSDL served at runtime) |
 | Containers | Dockerfile (multi-stage, one recipe for all services) + docker-compose (7 containers) |
-| Security | Self-issued **HS256 JWT**: auth-service mints, every service validates (shared secret) |
+| Security | Self-issued **RS256 JWT**: auth-service signs with a private key + serves JWKS; others verify with the public key (no shared secret, so verifiers cannot mint) |
 | Passwords | BCrypt (hashes carried over from the monolith seed) |
 | Tests | JUnit 5 + MockMvc per service; write tests are `@Transactional` (roll back, seed stays pristine) |
 
@@ -52,7 +52,8 @@ its autonomy with).
 
 `ers-auth-service` **owns identity**: it holds the only `JwtEncoder`, the only BCrypt verification,
 and the only write access to `users`/`roles`. `ers-reimbursement-service` is a **pure resource
-server**: it validates tokens it could never mint (HS256 symmetry via the shared secret) and maps
+server**: it validates tokens it genuinely cannot mint (it holds only auth-service's PUBLIC key,
+fetched from the JWKS endpoint — RS256's asymmetry, the fix for the old shared-secret HS256) and maps
 `users` **read-only, without the password column** — the credential physically cannot leak from a
 service that never loads it. The gateway routes by path and passes the Bearer token through
 untouched: authorization stays with the service that owns the resource, so a compromised gateway
@@ -61,7 +62,12 @@ cannot mint identities. Each service owns its own database outright — the refe
 
 ## Prerequisites
 
-- **A JDK 17+ with a compiler** (built on a portable Temurin JDK 21 — a JRE has no `javac`).
+- **A JDK 17+ with a compiler** (built on Temurin JDK 21 — a JRE has no `javac`).
+  > **On this dev box:** the default `java` on `PATH` is a JRE-only 21 (no `javac`), so the build
+  > silently falls back to JDK 8 and fails with `release version 17 not supported`. A full Temurin
+  > JDK 21 is installed at `~/jdks/jdk-21.0.11+10` — point every `mvn`/`java` command at it with
+  > `JAVA_HOME=~/jdks/jdk-21.0.11+10`. To install one on a fresh machine, see the monolith
+  > `STARTUP.md` install appendix (same JDK, different version line — grab 21 instead of 8).
 - **PostgreSQL** with the ERS schema seeded (below).
 
 ## Run with Docker (the whole system, one command)
@@ -93,13 +99,14 @@ services no longer use it.)
 ## Build, test, run
 
 ```bash
-export JAVA_HOME="/path/to/jdk-21"
+export JAVA_HOME=~/jdks/jdk-21.0.11+10        # on this box; any full JDK 17+ works elsewhere
 # Datasources default to localhost/ers_auth and localhost/ers_reimbursement (user/pass ers);
 # override with AUTH_DB_URL/USER/PASSWORD and REIMB_DB_URL/USER/PASSWORD if yours differ.
-# HS256 needs a >=32-char secret; BOTH services must get the SAME value (auth signs, reimb verifies).
-export ERS_JWT_SECRET="change-me-to-a-32+-char-random-secret"
+# JWT is RS256: auth-service GENERATES its signing keypair at startup (no secret to set) and
+# serves the public half at /.well-known/jwks.json. reimbursement-service fetches that to verify;
+# it defaults to http://localhost:8081/.well-known/jwks.json, override with ERS_JWKS_URI if needed.
 
-mvn test          # all modules, 36 tests green (Kafka tests run against an embedded in-JVM broker;
+mvn test          # all modules, 43 tests green (Kafka tests run against an embedded in-JVM broker;
                   # a real broker is only needed at runtime - localhost:9092 or KAFKA_BOOTSTRAP)
 mvn package -DskipTests
 
@@ -184,8 +191,8 @@ curl -s -X POST localhost:8080/ws -H 'Content-Type: text/xml' -d '<soapenv:Envel
 |---|---|---|---|
 | auth datasource | `AUTH_DB_URL` / `AUTH_DB_USER` / `AUTH_DB_PASSWORD` | `localhost:5432/ers_auth`, `ers`/`ers` | auth only |
 | reimbursement datasource | `REIMB_DB_URL` / `REIMB_DB_USER` / `REIMB_DB_PASSWORD` | `localhost:5432/ers_reimbursement`, `ers`/`ers` | reimbursement only |
-| `ers.jwt.secret` | `ERS_JWT_SECRET` | dev-only placeholder | auth (signs) + reimbursement (verifies) |
-| `ers.jwt.ttl-seconds` | `ERS_JWT_TTL_SECONDS` | `3600` | auth only (issuer concern) |
+| `ers.jwt.jwks-uri` | `ERS_JWKS_URI` | `localhost:8081/.well-known/jwks.json` | reimbursement (verifies via auth's public key) |
+| `ers.jwt.ttl-seconds` | `ERS_JWT_TTL_SECONDS` | `3600` | auth only (issuer concern; RS256 keypair is generated at startup, no secret) |
 | Kafka broker | `KAFKA_BOOTSTRAP` | `localhost:9092` | soap-adapter (produce) + reimbursement (consume) |
 | route targets | `AUTH_SERVICE_URL`, `REIMB_SERVICE_URL`, `SOAP_SERVICE_URL` | `localhost:8081/8082/8083` | gateway |
 | gateway host port | `GATEWAY_PORT` (compose only) | `8080` | docker-compose |

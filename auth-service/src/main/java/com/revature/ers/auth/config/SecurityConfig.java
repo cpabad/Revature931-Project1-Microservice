@@ -1,7 +1,5 @@
 package com.revature.ers.auth.config;
 
-import com.nimbusds.jose.jwk.source.ImmutableSecret;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -11,18 +9,9 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.security.oauth2.jwt.JwtEncoder;
-import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
-import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
-import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
 import org.springframework.security.web.SecurityFilterChain;
-
-import javax.crypto.SecretKey;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
 
 /**
  * Spring Security wiring for the ERS microservice - replaces the monolith's three hand-rolled
@@ -46,13 +35,8 @@ import java.nio.charset.StandardCharsets;
 @EnableMethodSecurity
 public class SecurityConfig {
 
-    /** Shared HMAC secret (see application.properties). Same key mints and verifies. */
-    private final SecretKey jwtKey;
-
-    public SecurityConfig(@Value("${ers.jwt.secret}") String secret) {
-        // HS256 = HMAC-SHA-256. The "HmacSHA256" JCA name ties this raw-bytes key to that algo.
-        this.jwtKey = new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256");
-    }
+    // Key material, JwtEncoder, and JwtDecoder live in JwkConfig since the RS256 move: this
+    // service signs with a private key and publishes the public half at /.well-known/jwks.json.
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
@@ -72,32 +56,14 @@ public class SecurityConfig {
             // rules (mechanism #1) live in ers-reimbursement-service's own SecurityConfig.
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.POST, "/login").permitAll()
+                // The JWKS is the PUBLIC key - it must be fetchable by verifiers (and anyone)
+                // without a token, or no service could ever validate its first request.
+                .requestMatchers(HttpMethod.GET, "/.well-known/jwks.json").permitAll()
                 .anyRequest().authenticated())
             // Turn on JWT validation, handing Spring our decoder + claim->authority converter.
             .oauth2ResourceServer(oauth2 -> oauth2
                 .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())));
         return http.build();
-    }
-
-    /**
-     * Validates incoming tokens. NimbusJwtDecoder.withSecretKey checks the HMAC signature with
-     * our key and (by default) rejects expired tokens. A failed check becomes a 401 automatically.
-     */
-    @Bean
-    public JwtDecoder jwtDecoder() {
-        return NimbusJwtDecoder.withSecretKey(jwtKey)
-                .macAlgorithm(MacAlgorithm.HS256)
-                .build();
-    }
-
-    /**
-     * Mints (signs) tokens with the SAME secret the decoder verifies with - that symmetry is the
-     * whole point of HS256 for a self-issuing service. ImmutableSecret wraps our key as the JWK
-     * source Nimbus signs from. (Used by TokenService when /login succeeds.)
-     */
-    @Bean
-    public JwtEncoder jwtEncoder() {
-        return new NimbusJwtEncoder(new ImmutableSecret<>(jwtKey));
     }
 
     /**

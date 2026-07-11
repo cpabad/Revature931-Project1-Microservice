@@ -9,28 +9,26 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
-import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
 import org.springframework.security.web.SecurityFilterChain;
 
-import javax.crypto.SecretKey;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
-
 /**
  * Security for the reimbursement service: a PURE resource server. It has no /login and no
- * JwtEncoder - auth-service mints the tokens; this service only verifies the HS256 signature
- * with the SAME shared secret and enforces its own route rules. That is the service boundary
- * in one sentence: identity is issued in one place and verified everywhere.
+ * JwtEncoder - auth-service mints the tokens; this service verifies RS256 signatures with
+ * auth-service's PUBLIC key, fetched from its JWKS endpoint. Since the RS256 move, "pure
+ * resource server" is enforced by cryptography, not just by code shape: holding the public
+ * key lets this service verify tokens but never mint them - a compromise here cannot forge
+ * an identity. (Under the old shared HS256 secret it could.)
  */
 @Configuration
 public class SecurityConfig {
 
-    private final SecretKey jwtKey;
+    /** Where auth-service publishes its public key set (env-driven for compose/K8s). */
+    private final String jwksUri;
 
-    public SecurityConfig(@Value("${ers.jwt.secret}") String secret) {
-        this.jwtKey = new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256");
+    public SecurityConfig(@Value("${ers.jwt.jwks-uri}") String jwksUri) {
+        this.jwksUri = jwksUri;
     }
 
     @Bean
@@ -52,11 +50,16 @@ public class SecurityConfig {
         return http.build();
     }
 
+    /**
+     * Verifies tokens against the issuer's JWKS. The key set is fetched LAZILY on the first
+     * token validation (then cached by Nimbus), so this service starts fine with auth-service
+     * down - but cannot validate its first bearer request until the issuer is reachable.
+     * That startup-order looseness is the practical win of JWKS over baking the public key
+     * into config; the token header's kid picks the matching key after a rotation.
+     */
     @Bean
     public JwtDecoder jwtDecoder() {
-        return NimbusJwtDecoder.withSecretKey(jwtKey)
-                .macAlgorithm(MacAlgorithm.HS256)
-                .build();
+        return NimbusJwtDecoder.withJwkSetUri(jwksUri).build();
     }
 
     /** Same claim mapping as auth-service: "role" claim -> ROLE_* authority. */
