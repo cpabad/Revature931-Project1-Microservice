@@ -61,7 +61,12 @@ cannot mint identities. Each service owns its own database outright — the refe
 
 ## Prerequisites
 
-- **A JDK 17+ with a compiler** (built on a portable Temurin JDK 21 — a JRE has no `javac`).
+- **A JDK 17+ with a compiler** (built on Temurin JDK 21 — a JRE has no `javac`).
+  > **On this dev box:** the default `java` on `PATH` is a JRE-only 21 (no `javac`), so the build
+  > silently falls back to JDK 8 and fails with `release version 17 not supported`. A full Temurin
+  > JDK 21 is installed at `~/jdks/jdk-21.0.11+10` — point every `mvn`/`java` command at it with
+  > `JAVA_HOME=~/jdks/jdk-21.0.11+10`. To install one on a fresh machine, see the monolith
+  > `STARTUP.md` install appendix (same JDK, different version line — grab 21 instead of 8).
 - **PostgreSQL** with the ERS schema seeded (below).
 
 ## Run with Docker (the whole system, one command)
@@ -93,13 +98,14 @@ services no longer use it.)
 ## Build, test, run
 
 ```bash
-export JAVA_HOME="/path/to/jdk-21"
+export JAVA_HOME=~/jdks/jdk-21.0.11+10        # on this box; any full JDK 17+ works elsewhere
 # Datasources default to localhost/ers_auth and localhost/ers_reimbursement (user/pass ers);
 # override with AUTH_DB_URL/USER/PASSWORD and REIMB_DB_URL/USER/PASSWORD if yours differ.
-# HS256 needs a >=32-char secret; BOTH services must get the SAME value (auth signs, reimb verifies).
-export ERS_JWT_SECRET="change-me-to-a-32+-char-random-secret"
+# JWT is RS256: auth-service GENERATES its signing keypair at startup (no secret to set) and
+# serves the public half at /.well-known/jwks.json. reimbursement-service fetches that to verify;
+# it defaults to http://localhost:8081/.well-known/jwks.json, override with ERS_JWKS_URI if needed.
 
-mvn test          # all modules, 36 tests green (Kafka tests run against an embedded in-JVM broker;
+mvn test          # all modules, 43 tests green (Kafka tests run against an embedded in-JVM broker;
                   # a real broker is only needed at runtime - localhost:9092 or KAFKA_BOOTSTRAP)
 mvn package -DskipTests
 
