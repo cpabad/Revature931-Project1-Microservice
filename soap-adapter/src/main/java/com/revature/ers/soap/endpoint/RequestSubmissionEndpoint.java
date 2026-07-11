@@ -14,12 +14,19 @@ import org.springframework.ws.server.endpoint.annotation.ResponsePayload;
 
 import java.time.LocalDate;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 /**
  * The one SOAP operation: a legacy partner submits a reimbursement request. The endpoint
  * validates the payload's business basics, publishes a JSON event, and acknowledges with a
- * correlation id - "accepted" means QUEUED, not persisted; processing is asynchronous in
- * reimbursement-service's Kafka listener.
+ * correlation id - "accepted" means QUEUED (broker-acknowledged, acks=all), not persisted;
+ * processing is asynchronous in reimbursement-service's Kafka listener.
+ *
+ * The ack is HONEST: the endpoint blocks on the send future before answering. Fire-and-forget
+ * would return accepted=true + a correlation id for an event that was never published when the
+ * broker is down - silent data loss wearing a receipt. The partner's call is synchronous
+ * anyway, so the blocking wait costs nothing extra on the happy path (linger.ms=0) and is
+ * bounded by the producer timeouts in application.properties when the broker is unreachable.
  *
  * TRUST BOUNDARY (deliberate, documented): a REST caller proves the requester's identity via
  * JWT; a SOAP partner ASSERTS requesterUserId in the payload. Production would authenticate
@@ -68,13 +75,33 @@ public class RequestSubmissionEndpoint {
                 eventDate.toString(),   // ISO-8601 on the wire, per the event contract
                 request.getEventLocationId(),
                 request.getRequestedEvent());
-        // key = requester id: submissions from the same user stay ordered on one partition
-        kafkaTemplate.send(topic, String.valueOf(request.getRequesterUserId()), event);
+        try {
+            // key = requester id: submissions from the same user stay ordered on one partition.
+            // get() surfaces broker failure here instead of in a log nobody is watching; the
+            // 15s ceiling is a backstop above delivery.timeout.ms (10s), which fails first.
+            kafkaTemplate.send(topic, String.valueOf(request.getRequesterUserId()), event)
+                    .get(15, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return rejected(response, correlationId, e);
+        } catch (Exception e) {
+            return rejected(response, correlationId, e);
+        }
         LOG.info("queued SOAP submission {} for requester {}", correlationId, request.getRequesterUserId());
 
         response.setAccepted(true);
         response.setCorrelationId(correlationId);
         response.setMessage("Submission queued for processing");
+        return response;
+    }
+
+    /** Nothing was published, so no correlation id goes out - there is nothing to correlate. */
+    private static SubmitReimbursementResponse rejected(SubmitReimbursementResponse response,
+                                                        String correlationId, Exception cause) {
+        LOG.error("SOAP submission {} could not be queued", correlationId, cause);
+        response.setAccepted(false);
+        response.setCorrelationId("");
+        response.setMessage("Submission could not be queued; please retry later");
         return response;
     }
 }
