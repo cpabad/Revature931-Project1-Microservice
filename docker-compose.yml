@@ -69,8 +69,8 @@ services:
       AUTH_DB_URL: jdbc:postgresql://auth-db:5432/ers_auth
       AUTH_DB_USER: ers
       AUTH_DB_PASSWORD: ers
-      # BOTH services must see the SAME secret (auth signs, reimbursement verifies).
-      ERS_JWT_SECRET: ${ERS_JWT_SECRET:-dev-only-insecure-ers-jwt-secret-change-me-32+}
+      # RS256: the signing keypair is generated inside this container at startup (JwkConfig);
+      # there is no signing secret to inject. Verifiers fetch the public key via JWKS.
     depends_on:
       auth-db:
         condition: service_healthy
@@ -85,7 +85,8 @@ services:
       REIMB_DB_USER: ers
       REIMB_DB_PASSWORD: ers
       KAFKA_BOOTSTRAP: kafka:9092
-      ERS_JWT_SECRET: ${ERS_JWT_SECRET:-dev-only-insecure-ers-jwt-secret-change-me-32+}
+      # Verify-only: fetch auth-service's public key set over the compose network.
+      ERS_JWKS_URI: http://auth-service:8081/.well-known/jwks.json
     depends_on:
       reimbursement-db:
         condition: service_healthy
