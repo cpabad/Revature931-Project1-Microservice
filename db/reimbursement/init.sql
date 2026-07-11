@@ -98,6 +98,18 @@ CREATE TABLE reimbursement (
     CONSTRAINT reimbursement_dateawarded_check CHECK ((dateawarded <= CURRENT_DATE))
 );
 
+-- ---- messaging infrastructure ------------------------------------------------
+
+-- Idempotency ledger for the Kafka intake: one row per correlation id ever
+-- processed (successfully OR deterministically rejected). Kafka delivers
+-- at-least-once - a crash between the DB commit and the offset commit replays
+-- the event - so the consumer records the id in the SAME transaction as the
+-- domain write and skips ids it has already seen. The PK is the guarantee.
+CREATE TABLE processed_event (
+    correlationid character varying PRIMARY KEY,
+    processedat   timestamp with time zone NOT NULL DEFAULT now()
+);
+
 -- ---- seed data (verbatim from the legacy shared dump, original insert order;
 --      users minus the password column) ---------------------------------------
 

@@ -41,7 +41,7 @@ its autonomy with).
 | Gateway | Spring Cloud Gateway (release train 2023.0.5) |
 | Language / build | Java 17, compiled on JDK 21; Maven multi-module |
 | Persistence | Spring Data JPA + Hibernate; **one PostgreSQL database per service** |
-| Messaging | Apache Kafka (spring-kafka); JSON events, each side owns its event record |
+| Messaging | Apache Kafka (spring-kafka); JSON events, each side owns its event record; idempotent consumer (correlation-id ledger) + retries + dead-letter topic |
 | Legacy intake | Spring-WS contract-first SOAP (XSD → xjc classes; WSDL served at runtime) |
 | Containers | Dockerfile (multi-stage, one recipe for all services) + docker-compose (7 containers) |
 | Security | Self-issued **RS256 JWT**: auth-service signs with a private key + serves JWKS; others verify with the public key (no shared secret, so verifiers cannot mint) |
@@ -106,7 +106,7 @@ export JAVA_HOME=~/jdks/jdk-21.0.11+10        # on this box; any full JDK 17+ wo
 # serves the public half at /.well-known/jwks.json. reimbursement-service fetches that to verify;
 # it defaults to http://localhost:8081/.well-known/jwks.json, override with ERS_JWKS_URI if needed.
 
-mvn test          # all modules, 43 tests green (Kafka tests run against an embedded in-JVM broker;
+mvn test          # all modules, 46 tests green (Kafka tests run against an embedded in-JVM broker;
                   # a real broker is only needed at runtime - localhost:9092 or KAFKA_BOOTSTRAP)
 mvn package -DskipTests
 
@@ -135,9 +135,22 @@ still speak. The adapter is an **anti-corruption layer**: it keeps XML at the ed
 valid submission into a JSON event on `reimbursement.request.submitted`, and acknowledges with a
 correlation id. reimbursement-service consumes the topic and runs the **same `RequestService.submit`
 fan-out the REST endpoint uses** — one domain rule, two transports. "Accepted" therefore means
-*queued*, not persisted: the pipeline is at-least-once and eventually consistent (the listener
-drops poison events with a log — production would use a dead-letter topic and de-duplicate
-replays on the correlation id).
+*queued*, not persisted: the pipeline is at-least-once and eventually consistent, and the consumer
+handles both consequences of that promise:
+
+- **Duplicates (idempotent consumer):** a crash between the database commit and the offset commit
+  replays the event, so the listener records every correlation id in a `processed_event` table
+  **in the same transaction as the domain write** and skips ids it has already seen — a replay
+  cannot create a second request. A deterministic business rejection (unknown location/requester)
+  is also marked processed: replaying it can never succeed, so its outcome is final (the async
+  twin of REST answering 4xx).
+- **Failures (dead-letter topic):** processing exceptions are retried (3 attempts, 1s backoff —
+  a database blip heals itself), then the record is published unchanged to
+  `reimbursement.request.submitted.DLT` and consumption moves on, so one poison event cannot
+  block the partition. Malformed payloads that never deserialize are classified as fatal and
+  dead-letter on the first attempt (`ErrorHandlingDeserializer`). The DLT is the operator's
+  inbox: everything there needs a human, nothing was silently lost — and records keep the wire
+  contract's field formats, so a repaired event can be replayed onto the main topic as-is.
 
 **Trust note:** a REST caller proves the requester's identity with a JWT; a SOAP partner *asserts*
 `requesterUserId` in the payload. Production would authenticate the partner itself (mTLS or

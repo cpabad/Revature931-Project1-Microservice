@@ -1,6 +1,7 @@
 package com.revature.ers.messaging;
 
 import com.revature.ers.model.Request;
+import com.revature.ers.repository.ProcessedEventRepository;
 import com.revature.ers.repository.RequestRepository;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -39,12 +40,16 @@ class RequestSubmissionListenerTest {
 
     @Autowired private EmbeddedKafkaBroker embeddedKafka;
     @Autowired private RequestRepository requestRepository;
+    @Autowired private ProcessedEventRepository processedEventRepository;
 
     @AfterEach
     void cleanUp() {
         requestRepository.findByRequester_UserId(5).stream()
                 .filter(r -> MARKER.equals(r.getRequestedEvent()))
                 .forEach(requestRepository::delete);
+        // the listener also marks the id processed; without this delete, the NEXT test run's
+        // identical event would be skipped as a redelivery (the idempotency doing its job)
+        processedEventRepository.deleteById("test-correlation-1");
     }
 
     @Test
