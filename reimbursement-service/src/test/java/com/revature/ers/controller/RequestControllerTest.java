@@ -26,14 +26,25 @@ class RequestControllerTest {
 
     @Test
     void getAll_serializesGraphAndHidesPassword() throws Exception {
-        // GET /requests is now Supervisor-only, so this data-shape check presents that authority.
+        // GET /requests is now Supervisor-only AND paged, so rows live under $.content and the
+        // data-shape check presents the Supervisor authority.
         mockMvc.perform(get("/requests").with(jwt().authorities(new SimpleGrantedAuthority("ROLE_Supervisor"))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].requestId").exists())
+                .andExpect(jsonPath("$.content[0].requestId").exists())
                 // nested entity comes back through the graph...
-                .andExpect(jsonPath("$[0].requestStatus.status").exists())
+                .andExpect(jsonPath("$.content[0].requestStatus.status").exists())
                 // ...but the requester's password never does (@JsonIgnore carried over)
-                .andExpect(jsonPath("$[0].requester.password").doesNotExist());
+                .andExpect(jsonPath("$.content[0].requester.password").doesNotExist());
+    }
+
+    @Test
+    void getAll_capsPageSizeAtHundred() throws Exception {
+        // ?size=100000 must NOT return an unbounded page - the max-page-size cap clamps it to
+        // 100, proving the OOM guard cannot be bypassed from the query string.
+        mockMvc.perform(get("/requests?size=100000")
+                        .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_Supervisor"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.pageable.pageSize").value(100));
     }
 
     // Both routes now check ownership against the token subject, and the default jwt()

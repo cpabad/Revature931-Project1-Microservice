@@ -16,6 +16,8 @@ import com.revature.ers.repository.RequestStatusRepository;
 import com.revature.ers.repository.SupervisorApprovalRepository;
 import com.revature.ers.repository.SupervisorApprovalStatusRepository;
 import com.revature.ers.repository.UserRepository;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -102,8 +104,8 @@ public class RequestService {
         return Optional.of(request);
     }
 
-    public List<Request> findAll() {
-        return requestRepository.findAll();
+    public Page<Request> findAll(Pageable pageable) {
+        return requestRepository.findAll(pageable);
     }
 
     public Optional<Request> findById(int id) {
