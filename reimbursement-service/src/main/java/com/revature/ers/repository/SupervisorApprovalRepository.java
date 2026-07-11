@@ -1,6 +1,7 @@
 package com.revature.ers.repository;
 
 import com.revature.ers.model.SupervisorApproval;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.List;
@@ -16,7 +17,11 @@ public interface SupervisorApprovalRepository extends JpaRepository<SupervisorAp
 
     /**
      * A manager's inbox. The monolith loaded findAll() and filtered in Java
-     * (findPendingRequestsForManager); this pushes both predicates into SQL.
+     * (findPendingRequestsForManager); this pushes both predicates into SQL. The graph
+     * fetches what PendingApprovalResponse serializes - the nested request and ITS
+     * associations - in the same query (associations are LAZY by default now).
      */
+    @EntityGraph(attributePaths = {"request", "request.requester", "request.requestStatus",
+            "request.eventLocation", "request.eventLocation.cityStatePostal"})
     List<SupervisorApproval> findByHierarchy_Supervisor_UserIdAndStatus_StatusId(int supervisorUserId, int statusId);
 }

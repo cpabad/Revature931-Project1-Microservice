@@ -1,9 +1,9 @@
 package com.revature.ers.controller;
 
 import com.revature.ers.dto.ApprovalDecisionRequest;
+import com.revature.ers.dto.PendingApprovalResponse;
 import com.revature.ers.dto.ApprovalDecisionResponse;
 import com.revature.ers.model.ApprovalOutcome;
-import com.revature.ers.model.SupervisorApproval;
 import com.revature.ers.service.ApprovalService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -35,8 +35,11 @@ public class ApprovalController {
     }
 
     @GetMapping("/approvals/pending")
-    public ResponseEntity<List<SupervisorApproval>> myPendingApprovals(@AuthenticationPrincipal Jwt jwt) {
-        return ResponseEntity.ok(approvalService.findPendingForSupervisor(Integer.parseInt(jwt.getSubject())));
+    public ResponseEntity<List<PendingApprovalResponse>> myPendingApprovals(@AuthenticationPrincipal Jwt jwt) {
+        // DTO-mapped: the entity version serialized the deepest graph in the API
+        // (approval -> request -> requester/location/status -> hierarchy -> users)
+        return ResponseEntity.ok(approvalService.findPendingForSupervisor(Integer.parseInt(jwt.getSubject()))
+                .stream().map(PendingApprovalResponse::from).toList());
     }
 
     @PutMapping("/requests/{requestId}/approval")

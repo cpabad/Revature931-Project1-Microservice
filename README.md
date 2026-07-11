@@ -40,7 +40,8 @@ its autonomy with).
 | Framework | Spring Boot 3.3.6 (3.3.6 minimum: Gateway 4.1.6 needs Framework 6.1.15) |
 | Gateway | Spring Cloud Gateway (release train 2023.0.5) |
 | Language / build | Java 17, compiled on JDK 21; Maven multi-module |
-| Persistence | Spring Data JPA + Hibernate; **one PostgreSQL database per service** |
+| Persistence | Spring Data JPA + Hibernate; **one PostgreSQL database per service**; associations LAZY with per-query `@EntityGraph` fetch plans; OSIV off |
+| API responses | **DTO records, never entities**: the wire shape is declared per endpoint, so schema changes cannot leak into JSON by default |
 | Messaging | Apache Kafka (spring-kafka); JSON events, each side owns its event record; idempotent consumer (correlation-id ledger) + retries + dead-letter topic |
 | Legacy intake | Spring-WS contract-first SOAP (XSD → xjc classes; WSDL served at runtime) |
 | Containers | Dockerfile (multi-stage, one recipe for all services) + docker-compose (7 containers) |

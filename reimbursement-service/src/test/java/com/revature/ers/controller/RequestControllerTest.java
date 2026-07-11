@@ -15,7 +15,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * End-to-end tracer for the Request slice: controller -> service -> Spring Data repo ->
- * Hibernate (eager graph) -> seeded PostgreSQL -> JSON.
+ * Hibernate (LAZY associations fetched per-query by @EntityGraph) -> seeded PostgreSQL ->
+ * RequestResponse DTO -> JSON.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -31,9 +32,9 @@ class RequestControllerTest {
         mockMvc.perform(get("/requests").with(jwt().authorities(new SimpleGrantedAuthority("ROLE_Supervisor"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content[0].requestId").exists())
-                // nested entity comes back through the graph...
-                .andExpect(jsonPath("$.content[0].requestStatus.status").exists())
-                // ...but the requester's password never does (@JsonIgnore carried over)
+                // the DTO carries the status STRING, not the entity's status object
+                .andExpect(jsonPath("$.content[0].status").exists())
+                // and the requester summary structurally cannot carry a password
                 .andExpect(jsonPath("$.content[0].requester.password").doesNotExist());
     }
 
@@ -57,7 +58,9 @@ class RequestControllerTest {
                 .andExpect(jsonPath("$.requestId").value(1))
                 .andExpect(jsonPath("$.requestedEvent").value("Anime Convention"))
                 .andExpect(jsonPath("$.requester.userId").value(2))
-                .andExpect(jsonPath("$.requestStatus.statusId").value(2));
+                .andExpect(jsonPath("$.status").value("Pending"))
+                // the DTO flattens the location's postal join - city/state inside the address
+                .andExpect(jsonPath("$.eventLocation.city").exists());
     }
 
     @Test
