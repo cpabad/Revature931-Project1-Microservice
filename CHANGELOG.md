@@ -255,3 +255,36 @@ correlation id for an event that was never published — silent data loss wearin
   happy path (its broker is up by definition); the broker-down nack is pinned by a plain
   Mockito unit test feeding the endpoint a failed future. Live-drilled too: adapter started
   with no broker answered `accepted=false` in 5.2s (`max.block.ms` firing).
+
+## Phase 6 — hardening pass (2026-07-11)
+
+### RS256 keypair JWT — verification no longer implies minting
+The self-issued JWT was HS256 with a secret shared by both services. Symmetric signing means
+any service that can VERIFY a token can also MINT one — a compromised reimbursement-service
+could forge a Supervisor identity. Replaced with asymmetric RS256.
+
+- **auth-service signs, everyone verifies.** A `JwkConfig` generates an RSA keypair at startup;
+  `TokenService` signs RS256 with the private half. `JwksController` publishes only the PUBLIC
+  half at `GET /.well-known/jwks.json` (RFC 8615 well-known path, `permitAll` — public keys are
+  public). The private key never leaves the JVM, appears in no config, and cannot be committed.
+- **reimbursement-service becomes a pure verifier by cryptography, not convention.** Its
+  `JwtDecoder` is now `NimbusJwtDecoder.withJwkSetUri(...)` pointed at the issuer's JWKS
+  (`ERS_JWKS_URI`); it holds only the public key, so it can validate but never forge. The
+  shared `ERS_JWT_SECRET` is gone from both services and docker-compose.
+- **Key lifecycle (deliberate dev tradeoff).** The pair is ephemeral — regenerated each start,
+  so a restart invalidates outstanding tokens (fine at a 1h TTL, and no key file can leak).
+  Production would load a persistent pair and rotate via the JWKS `kid`; the token header
+  already carries the `kid` for that.
+- **Tests.** `AuthorizationRulesTest` now generates its own RSA keypair, signs RS256 as the
+  issuer stand-in, and verifies through a `@Primary` public-key decoder — the cross-service
+  contract test, minus the mint-with-the-verifier's-own-key capability that IS the upgrade.
+  Suite 43/43. Live-verified: login mints `alg=RS256`+`kid`; reimbursement-service verifies via
+  a live JWKS fetch with no shared secret; no-token / tampered-sig = 401, wrong-role = 403.
+
+### GET /requests is paged with a hard-capped size
+`findAll()` returned the whole table — fine at 4 seed rows, an OOM at scale (response, Jackson
+buffer, and eager entity graph all grow with row count). Now takes Spring Data `Pageable`
+(`?page=&size=&sort=`), defaults to 20 newest-first, and returns a `Page` envelope. The size is
+**hard-capped at 100** via `spring.data.web.pageable.max-page-size`: `?size=100000` is silently
+clamped to 100, so the guard cannot be bypassed from the query string. A `getAll_capsPageSizeAtHundred`
+test pins it; live-verified (default 20, `?size=100000`→100, `?size=1`→4 pages).
