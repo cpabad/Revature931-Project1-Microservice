@@ -77,11 +77,46 @@ class AuthorizationRulesTest {
                 .andExpect(status().isUnauthorized());
     }
 
-    // --- shared route: any authenticated role may view requests by requester -------------------
+    // --- object-level authorization: /requests/{id} is owner-or-Supervisor ---------------------
+    // Seed fact: request 1 belongs to userId 2. A foreign employee gets 404, not 403 - a 403
+    // would confirm the id exists, handing an id-walker an enumeration oracle.
 
     @Test
-    void employee_canViewRequestsByRequester() throws Exception {
+    void owner_canReadOwnRequestById() throws Exception {
+        mockMvc.perform(get("/requests/1").header("Authorization", "Bearer " + mint(2, "Employee")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void otherEmployee_readingForeignRequestById_isNotFound() throws Exception {
+        mockMvc.perform(get("/requests/1").header("Authorization", "Bearer " + mint(3, "Employee")))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void supervisor_canReadAnyRequestById() throws Exception {
+        mockMvc.perform(get("/requests/1").header("Authorization", "Bearer " + mint(1, "Supervisor")))
+                .andExpect(status().isOk());
+    }
+
+    // --- /requests/requester/{userId}: that user or a Supervisor -------------------------------
+    // Mismatch is an honest 403 here: the caller supplied the userId, nothing to leak.
+
+    @Test
+    void employee_canViewOwnRequestsByRequester() throws Exception {
         mockMvc.perform(get("/requests/requester/2").header("Authorization", "Bearer " + mint(2, "Employee")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void employee_viewingAnotherUsersRequests_isForbidden() throws Exception {
+        mockMvc.perform(get("/requests/requester/2").header("Authorization", "Bearer " + mint(3, "Employee")))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void supervisor_canViewAnyUsersRequestsByRequester() throws Exception {
+        mockMvc.perform(get("/requests/requester/2").header("Authorization", "Bearer " + mint(1, "Supervisor")))
                 .andExpect(status().isOk());
     }
 }
