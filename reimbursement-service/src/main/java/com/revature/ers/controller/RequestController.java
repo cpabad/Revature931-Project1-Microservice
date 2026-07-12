@@ -1,7 +1,7 @@
 package com.revature.ers.controller;
 
+import com.revature.ers.dto.RequestResponse;
 import com.revature.ers.dto.SubmitRequestDto;
-import com.revature.ers.model.Request;
 import com.revature.ers.service.RequestService;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -22,9 +22,10 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 /**
- * REST surface for reimbursement requests. Jackson serializes the whole eager graph
- * (requester, eventLocation, requestStatus) automatically; User.password stays out via
- * its @JsonIgnore.
+ * REST surface for reimbursement requests. Every response goes out as a RequestResponse
+ * DTO, mapped HERE at the boundary: the service speaks entities (domain), the controller
+ * owns the wire shape. Serializing entities directly coupled the JSON to the schema -
+ * every mapped association shipped, and any new column leaked by default.
  *
  *   GET  /requests                  -> a PAGE of requests (Supervisor); ?page=&size=&sort=
  *   GET  /requests/{id}             -> one request (owner or Supervisor), or 404
@@ -57,32 +58,34 @@ public class RequestController {
      * asking for ?size=100000 silently gets 100, so the cap cannot be bypassed from the query.
      */
     @GetMapping
-    public ResponseEntity<Page<Request>> getAll(
+    public ResponseEntity<Page<RequestResponse>> getAll(
             @PageableDefault(size = 20, sort = "requestId", direction = Sort.Direction.DESC)
             Pageable pageable) {
-        return ResponseEntity.ok(requestService.findAll(pageable));
+        // Page.map keeps the envelope (totalElements, pageable...) and swaps the content
+        return ResponseEntity.ok(requestService.findAll(pageable).map(RequestResponse::from));
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<Request> getById(JwtAuthenticationToken auth, @PathVariable int id) {
+    public ResponseEntity<RequestResponse> getById(JwtAuthenticationToken auth, @PathVariable int id) {
         return requestService.findById(id)
                 .filter(r -> isSupervisor(auth) || r.getRequester().getUserId() == callerId(auth))
+                .map(RequestResponse::from)
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     @GetMapping("/requester/{userId}")
-    public ResponseEntity<List<Request>> getByRequester(JwtAuthenticationToken auth, @PathVariable int userId) {
+    public ResponseEntity<List<RequestResponse>> getByRequester(JwtAuthenticationToken auth, @PathVariable int userId) {
         if (userId != callerId(auth) && !isSupervisor(auth)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
-        return ResponseEntity.ok(requestService.findByRequesterId(userId));
+        return ResponseEntity.ok(requestService.findByRequesterId(userId).stream().map(RequestResponse::from).toList());
     }
 
     @PostMapping
-    public ResponseEntity<Request> submit(@AuthenticationPrincipal Jwt jwt, @RequestBody SubmitRequestDto dto) {
+    public ResponseEntity<RequestResponse> submit(@AuthenticationPrincipal Jwt jwt, @RequestBody SubmitRequestDto dto) {
         return requestService.submit(Integer.parseInt(jwt.getSubject()), dto)
-                .map(created -> ResponseEntity.status(HttpStatus.CREATED).body(created))
+                .map(created -> ResponseEntity.status(HttpStatus.CREATED).body(RequestResponse.from(created)))
                 // empty = unknown event location id
                 .orElseGet(() -> ResponseEntity.badRequest().build());
     }

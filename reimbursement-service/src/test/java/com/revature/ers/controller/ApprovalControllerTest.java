@@ -130,7 +130,10 @@ class ApprovalControllerTest {
                         .with(jwt().jwt(j -> j.subject("1")).authorities(new SimpleGrantedAuthority("ROLE_Supervisor"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2))
-                .andExpect(jsonPath("$[0].status.statusId").value(PENDING))
-                .andExpect(jsonPath("$[1].status.statusId").value(PENDING));
+                // DTO shape: the vote id to act on + the request being voted on (no
+                // approval-status field - "pending" is the inbox's definition)
+                .andExpect(jsonPath("$[0].approvalId").isNumber())
+                .andExpect(jsonPath("$[0].request.requester.username").exists())
+                .andExpect(jsonPath("$[1].request.status").value("Pending"));
     }
 }

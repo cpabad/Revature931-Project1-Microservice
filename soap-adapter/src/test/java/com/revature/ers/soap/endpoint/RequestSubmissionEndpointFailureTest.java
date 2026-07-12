@@ -32,8 +32,12 @@ class RequestSubmissionEndpointFailureTest {
         KafkaTemplate<String, RequestSubmissionEvent> kafka = mock(KafkaTemplate.class);
         when(kafka.send(anyString(), anyString(), any(RequestSubmissionEvent.class)))
                 .thenReturn(CompletableFuture.failedFuture(new TimeoutException("broker unreachable")));
-        RequestSubmissionEndpoint endpoint =
-                new RequestSubmissionEndpoint(kafka, "reimbursement.request.submitted");
+        // no partner identity in a plain unit test (no handshake) -> resolver returns empty ->
+        // the allowlist gate is skipped, exactly as on the plain-HTTP dev profile
+        RequestSubmissionEndpoint endpoint = new RequestSubmissionEndpoint(
+                kafka, "reimbursement.request.submitted",
+                new com.revature.ers.soap.security.PartnerResolver(),
+                new com.revature.ers.soap.security.PartnerAllowlist(java.util.Map.of()));
 
         SubmitReimbursementResponse response = endpoint.submit(validRequest());
 

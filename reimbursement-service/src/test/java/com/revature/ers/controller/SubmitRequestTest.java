@@ -55,7 +55,7 @@ class SubmitRequestTest {
                 .andExpect(jsonPath("$.requestId").isNumber())
                 // requester came from the token, not the body
                 .andExpect(jsonPath("$.requester.userId").value(3))
-                .andExpect(jsonPath("$.requestStatus.statusId").value(PENDING))
+                .andExpect(jsonPath("$.status").value("Pending"))
                 .andReturn();
 
         int requestId = objectMapper.readTree(result.getResponse().getContentAsString()).get("requestId").asInt();
