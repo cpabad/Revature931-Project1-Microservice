@@ -29,10 +29,13 @@ structurally absent from that service's world. The copy is **kept in sync by eve
 committed profile update in auth-service is published on `auth.user.updated` as a full state
 snapshot (event-carried state transfer), and reimbursement-service overwrites its replica row
 from the event alone — a rename propagates in milliseconds locally, *eventually* by contract.
-That eventual consistency is the price this layout pays for its autonomy, and the sync is
-honest about its edges: publish happens after commit (a crash between the two loses one event
-— the dual-write gap an outbox would close), and replay is harmless because overwriting with
-a snapshot is idempotent by shape.
+That eventual consistency is the price this layout pays for its autonomy — and the delivery is
+guaranteed by a **transactional outbox**: the event is written to `outbox_event` in the same
+database transaction as the profile change, then a relay drains it to Kafka (1s poll + an
+after-commit nudge for ~ms latency) and deletes the row on the broker's ack. An update
+committed while the broker is down parks in the outbox and delivers when it returns — the
+caller's 200 never depends on Kafka being alive. Replay after a crash-between-ack-and-delete
+is harmless: overwriting with a snapshot is idempotent by shape.
 
 > **Full history & the monolith it came from:** [`cpabad/Christian-Project1`](https://github.com/cpabad/Christian-Project1)
 > — the original monolith, its hardening/refresh changelog, and the monolith→microservice journey.
@@ -49,7 +52,7 @@ topic reimbursement-service consumes alongside the request intake.)
 | Language / build | Java 17, compiled on JDK 21; Maven multi-module |
 | Persistence | Spring Data JPA + Hibernate; **one PostgreSQL database per service**; associations LAZY with per-query `@EntityGraph` fetch plans; OSIV off |
 | API responses | **DTO records, never entities**: the wire shape is declared per endpoint, so schema changes cannot leak into JSON by default |
-| Messaging | Apache Kafka (spring-kafka); JSON events, each side owns its event record; idempotent consumer (correlation-id ledger) + retries + dead-letter topic; users/roles replica synced via `auth.user.updated` snapshots |
+| Messaging | Apache Kafka (spring-kafka); JSON events, each side owns its event record; idempotent consumer (correlation-id ledger) + retries + dead-letter topic; users/roles replica synced via `auth.user.updated` snapshots (transactional outbox) |
 | Legacy intake | Spring-WS contract-first SOAP (XSD → xjc classes; WSDL served at runtime) |
 | Containers | Dockerfile (multi-stage, one recipe for all services) + docker-compose (7 containers) |
 | Security | Self-issued **RS256 JWT**: auth-service signs with a private key + serves JWKS; others verify with the public key (no shared secret, so verifiers cannot mint) |
@@ -114,7 +117,7 @@ export JAVA_HOME=~/jdks/jdk-21.0.11+10        # on this box; any full JDK 17+ wo
 # serves the public half at /.well-known/jwks.json. reimbursement-service fetches that to verify;
 # it defaults to http://localhost:8081/.well-known/jwks.json, override with ERS_JWKS_URI if needed.
 
-mvn test          # all modules, 48 tests green (Kafka tests run against an embedded in-JVM broker;
+mvn test          # all modules, 50 tests green (Kafka tests run against an embedded in-JVM broker;
                   # a real broker is only needed at runtime - localhost:9092 or KAFKA_BOOTSTRAP)
 mvn package -DskipTests
 

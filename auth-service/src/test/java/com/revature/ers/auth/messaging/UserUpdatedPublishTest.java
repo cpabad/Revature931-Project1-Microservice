@@ -1,6 +1,7 @@
 package com.revature.ers.auth.messaging;
 
 import com.revature.ers.auth.model.User;
+import com.revature.ers.auth.repository.OutboxEventRepository;
 import com.revature.ers.auth.repository.UserRepository;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -22,6 +23,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Duration;
+
+import static org.awaitility.Awaitility.await;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -35,13 +38,15 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * The publish side of the replica sync: a COMMITTED profile update - and only a committed
- * one - lands on auth.user.updated as a full snapshot.
+ * The publish side of the replica sync, end to end THROUGH THE OUTBOX: a COMMITTED profile
+ * update - and only a committed one - lands on auth.user.updated as a full snapshot, and the
+ * outbox row that carried it is deleted on the broker's ack (a row means "pending", so an
+ * empty table afterwards means "delivered").
  *
- * Deliberately NOT @Transactional (unlike UserControllerTest): the publisher runs at
- * AFTER_COMMIT, and a rolled-back test transaction never commits - the listener would
- * simply not fire and the test would pass vacuously with a broken publisher. Real commits
- * mean manual cleanup: the original hash and email are captured and restored.
+ * Deliberately NOT @Transactional (unlike UserControllerTest): the outbox row is written in
+ * the update's transaction, and a rolled-back test transaction commits nothing - the relay
+ * (reading through its own connection) would never see the row and the event would never
+ * publish. Real commits mean manual cleanup: the original hash and email are restored.
  */
 @SpringBootTest(properties = "spring.kafka.bootstrap-servers=${spring.embedded.kafka.brokers}")
 @AutoConfigureMockMvc
@@ -54,6 +59,7 @@ class UserUpdatedPublishTest {
     @Autowired private UserRepository userRepository;
     @Autowired private PasswordEncoder passwordEncoder;
     @Autowired private EmbeddedKafkaBroker embeddedKafka;
+    @Autowired private OutboxEventRepository outboxRepository;
 
     private String originalHash;
     private String originalEmail;
@@ -108,5 +114,9 @@ class UserUpdatedPublishTest {
             assertTrue(json.contains("\"role\":"));
             assertFalse(json.contains("password"), "the credential never rides an event");
         }
+
+        // the relay deleted the row on the broker's ack - the queue drained
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
+                assertEquals(0, outboxRepository.count(), "outbox drains after confirmed delivery"));
     }
 }
