@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -28,12 +29,13 @@ class GatewayRoutesTest {
         List<Route> routes = routeLocator.getRoutes().collectList().block();
         List<String> ids = Objects.requireNonNull(routes).stream().map(Route::getId).toList();
 
-        assertEquals(3, routes.size());
+        // exactly the two employee-facing services - the SOAP adapter is deliberately
+        // absent (partners connect to its mTLS port directly; see its application-mtls notes)
+        assertEquals(2, routes.size());
         assertTrue(ids.contains("auth-service"));
         assertTrue(ids.contains("reimbursement-service"));
-        assertTrue(ids.contains("soap-adapter"));
+        assertFalse(ids.contains("soap-adapter"));
         assertTrue(routes.stream().anyMatch(r -> r.getUri().toString().contains("8081")));
         assertTrue(routes.stream().anyMatch(r -> r.getUri().toString().contains("8082")));
-        assertTrue(routes.stream().anyMatch(r -> r.getUri().toString().contains("8083")));
     }
 }

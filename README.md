@@ -6,21 +6,21 @@ became a single Spring Boot service, and now runs as **three independently deplo
 a gateway**:
 
 ```
-                                ┌──────────────────────┐
-   REST + SOAP ────── :8080 ───▶│      ers-gateway      │  Spring Cloud Gateway (reactive)
-                                └──────────┬───────────┘  routes by path, forwards headers
-             /login /users/** /roles/**    │    /requests/** /approvals/**       /ws/**
-                     ▼                     ▼                                       ▼
+              REST ───── :8080 ─▶┌──────────────────────┐            SOAP over mTLS ─── :8443 ─┐
+                                 │      ers-gateway      │  Spring Cloud Gateway (reactive)     │
+                                 └──────────┬───────────┘  routes by path, forwards headers     │
+             /login /users/** /roles/**     │    /requests/** /approvals/**                     │
+                     ▼                      ▼                                                    ▼
         ┌────────────────────┐   ┌──────────────────────────┐          ┌──────────────────────┐
         │  ers-auth-service   │   │ ers-reimbursement-service │          │   ers-soap-adapter    │
-        │  :8081  (issuer)    │   │  :8082 (resource server)  │          │  :8083 (no database)  │
-        │  login → mints JWT  │   │  requests / approvals /   │          │  legacy SOAP intake   │
-        │  profile, roles     │   │  reimbursements + Kafka   │          │  → JSON event         │
+        │  :8081  (issuer)    │   │  :8082 (resource server)  │          │  :8083 http / :8443   │
+        │  login → mints JWT  │   │  requests / approvals /   │          │  mTLS (no database)   │
+        │  profile, roles     │   │  reimbursements + Kafka   │          │  legacy SOAP → event  │
         │  OWNS users, roles  │   │  consumer                 │          └──────────┬───────────┘
         └─────────┬──────────┘   └─────┬──────────▲─────────┘                     │
                   ▼                    ▼          │     reimbursement.request.submitted
             ers_auth DB     ers_reimbursement DB  └────────────── Kafka ◀──────────┘
-        (db/auth/init.sql)  (db/reimbursement/init.sql)
+        (db/auth/init.sql)  (db/reimbursement/init.sql)   (partners bypass the gateway - mTLS direct)
 ```
 
 **Databases-per-service:** no cross-database joins exist. `ers_reimbursement` carries a
@@ -55,7 +55,7 @@ topic reimbursement-service consumes alongside the request intake.)
 | Messaging | Apache Kafka (spring-kafka); JSON events, each side owns its event record; idempotent consumer (correlation-id ledger) + retries + dead-letter topic; users/roles replica synced via `auth.user.updated` snapshots (transactional outbox) |
 | Legacy intake | Spring-WS contract-first SOAP (XSD → xjc classes; WSDL served at runtime) |
 | Containers | Dockerfile (multi-stage, one recipe for all services) + docker-compose (7 containers) |
-| Security | Self-issued **RS256 JWT**: auth-service signs with a private key + serves JWKS; others verify with the public key (no shared secret, so verifiers cannot mint) |
+| Security | Self-issued **RS256 JWT** for users (auth signs + serves JWKS; others verify, cannot mint); **mutual TLS** for SOAP partners (client-cert handshake + per-partner allowlist) |
 | Passwords | BCrypt (hashes carried over from the monolith seed) |
 | Tests | JUnit 5 + MockMvc per service; write tests are `@Transactional` (roll back, seed stays pristine) |
 
@@ -117,7 +117,7 @@ export JAVA_HOME=~/jdks/jdk-21.0.11+10        # on this box; any full JDK 17+ wo
 # serves the public half at /.well-known/jwks.json. reimbursement-service fetches that to verify;
 # it defaults to http://localhost:8081/.well-known/jwks.json, override with ERS_JWKS_URI if needed.
 
-mvn test          # all modules, 50 tests green (Kafka tests run against an embedded in-JVM broker;
+mvn test          # all modules, 54 tests green (Kafka tests run against an embedded in-JVM broker;
                   # a real broker is only needed at runtime - localhost:9092 or KAFKA_BOOTSTRAP)
 mvn package -DskipTests
 
@@ -163,13 +163,24 @@ handles both consequences of that promise:
   inbox: everything there needs a human, nothing was silently lost — and records keep the wire
   contract's field formats, so a repaired event can be replayed onto the main topic as-is.
 
-**Trust note:** a REST caller proves the requester's identity with a JWT; a SOAP partner *asserts*
-`requesterUserId` in the payload. Production would authenticate the partner itself (mTLS or
-WS-Security) and allowlist which user ids it may submit for — documented on the endpoint, out of
-scope here.
+**Partner trust, closed in two layers.** A REST caller proves identity with a JWT; a SOAP partner
+*asserts* `requesterUserId`, so the partner itself must be authenticated. On the adapter's `mtls`
+profile that happens at the transport: **mutual TLS** with `client-auth=need` — Tomcat refuses any
+connection whose client certificate does not chain to our CA, so authentication finishes *before a
+byte of SOAP is read*. The partner's name is the certificate's CN; a per-partner **allowlist**
+(`ers.partners.allowed-user-ids.<cn>`) then decides which `requesterUserId`s that partner may submit
+for (a valid certificate proves *who you are*, never *whom you may act for*). Partners connect to the
+adapter's TLS port **directly** — there is deliberately no gateway `/ws` route, since routing partner
+traffic through the employee edge would either bypass the handshake or make the gateway the partner.
+The default (dev) profile keeps plain HTTP with the intake unauthenticated and logs that posture at
+startup — convenient for local runs, never a mode for real partner traffic. Generate local
+certificates with `scripts/gen-partner-certs.sh` (keys are gitignored, never committed).
 
 ```bash
-curl -s -X POST localhost:8080/ws -H 'Content-Type: text/xml' -d '<soapenv:Envelope
+# mtls profile: present a CA-signed partner certificate (acme, allowlisted for users 3 & 5).
+# No --cert, or a cert from another CA, is refused at the TLS handshake - it never reaches here.
+curl -s --cacert certs/ca.crt --cert certs/acme.crt --key certs/acme.key \
+  -X POST https://localhost:8443/ws -H 'Content-Type: text/xml' -d '<soapenv:Envelope
   xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
   xmlns:req="http://revature.com/ers/soap/requests">
   <soapenv:Body>
@@ -182,6 +193,7 @@ curl -s -X POST localhost:8080/ws -H 'Content-Type: text/xml' -d '<soapenv:Envel
     </req:submitReimbursementRequest>
   </soapenv:Body>
 </soapenv:Envelope>'
+# dev profile (default, plain HTTP): same body to  http://localhost:8083/ws  with no certificate.
 ```
 
 ## Auth model
@@ -193,7 +205,7 @@ curl -s -X POST localhost:8080/ws -H 'Content-Type: text/xml' -d '<soapenv:Envel
 3. Roles enforced per service: path rules in each service's `SecurityConfig`, plus `@PreAuthorize`
    on `GET /roles`. Unauthenticated → **401**; authenticated but wrong role → **403**.
 
-### Endpoints (all through the gateway on :8080)
+### Endpoints (all through the gateway on :8080 — except the SOAP adapter, see the partner-trust note)
 
 | Method & path | Service | Access | Notes |
 |---|---|---|---|
@@ -206,8 +218,8 @@ curl -s -X POST localhost:8080/ws -H 'Content-Type: text/xml' -d '<soapenv:Envel
 | `POST /requests` | reimbursement | authenticated | submit for yourself (requester = token subject); fans out the approval chain; 201 |
 | `PUT /requests/{id}/approval` | reimbursement | **Supervisor** | apply your approve/deny; returns `{"outcome": ...}`; 404 no vote, 409 waiting |
 | `GET /approvals/pending` | reimbursement | **Supervisor** | your still-pending votes (the approval inbox) |
-| `POST /ws` (SOAP) | soap-adapter | partner (no JWT — see trust note) | `submitReimbursementRequest` → acknowledged with a correlation id, processed asynchronously via Kafka |
-| `GET /ws/requests.wsdl` | soap-adapter | open | the machine-readable SOAP contract |
+| `POST /ws` (SOAP) | soap-adapter | **mTLS partner** (`mtls` profile) + per-partner allowlist | direct to the adapter's TLS `:8443`, NOT via the gateway; `submitReimbursementRequest` → acknowledged with a correlation id, processed asynchronously via Kafka |
+| `GET /ws/requests.wsdl` | soap-adapter | mTLS partner | the SOAP contract, behind the same handshake |
 
 ## Configuration
 

@@ -15,12 +15,10 @@ spring:
           uri: ${REIMB_SERVICE_URL:http://localhost:8082}
           predicates:
             - Path=/requests/**,/approvals/**
-        # Legacy SOAP intake -> soap-adapter (SOAP is just HTTP POST XML; /ws/requests.wsdl
-        # serves the contract). The adapter has no JWT - see its trust-boundary note.
-        - id: soap-adapter
-          uri: ${SOAP_SERVICE_URL:http://localhost:8083}
-          predicates:
-            - Path=/ws/**
+        # NO route for the SOAP adapter - deliberately. B2B partners authenticate with mTLS
+        # client certificates and connect to the adapter's own TLS port directly (its 'mtls'
+        # profile); routing /ws through this gateway would either bypass that handshake or
+        # make the gateway a partner. The gateway is the EMPLOYEE-facing REST edge, nothing else.
 
 # The system's single public port; the services' 8081/8082 stay internal in a real deployment.
 server:

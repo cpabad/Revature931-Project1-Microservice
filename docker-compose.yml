@@ -104,6 +104,10 @@ services:
         MODULE: soap-adapter
     environment:
       KAFKA_BOOTSTRAP: kafka:9092
+      # This compose runs the adapter in its PLAIN-HTTP dev profile (unauthenticated intake) for
+      # a self-contained demo. Partner-facing deployment sets SPRING_PROFILES_ACTIVE=mtls and
+      # mounts the keystore/truststore (see soap-adapter/application-mtls.properties +
+      # scripts/gen-partner-certs.sh); partners then connect to :8443 directly, not via the gateway.
     depends_on:
       kafka:
         condition: service_healthy
@@ -117,10 +121,9 @@ services:
       # service names resolve on the compose network - no localhost inside containers
       AUTH_SERVICE_URL: http://auth-service:8081
       REIMB_SERVICE_URL: http://reimbursement-service:8082
-      SOAP_SERVICE_URL: http://soap-adapter:8083
+      # no SOAP route: partners reach the adapter's mTLS port directly (see its service block)
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
     depends_on:
       - auth-service
       - reimbursement-service
-      - soap-adapter
