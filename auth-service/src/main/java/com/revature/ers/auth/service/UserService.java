@@ -2,9 +2,11 @@ package com.revature.ers.auth.service;
 
 import com.revature.ers.auth.dto.ProfileUpdateRequest;
 import com.revature.ers.auth.dto.ProfileUpdateResult;
+import com.revature.ers.auth.event.UserProfileUpdatedEvent;
 import com.revature.ers.auth.model.User;
 import com.revature.ers.auth.repository.UserRepository;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -20,10 +22,13 @@ public class UserService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final ApplicationEventPublisher events;
 
-    public UserService(UserRepository userRepository, PasswordEncoder passwordEncoder) {
+    public UserService(UserRepository userRepository, PasswordEncoder passwordEncoder,
+                       ApplicationEventPublisher events) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
+        this.events = events;
     }
 
     @Transactional
@@ -55,6 +60,10 @@ public class UserService {
         if (wantsPassword) {
             user.setPassword(passwordEncoder.encode(form.newPassword()));
         }
-        return new ProfileUpdateResult(ProfileUpdateResult.Status.UPDATED, userRepository.save(user));
+        User updated = userRepository.save(user);
+        // Raised INSIDE the transaction; the Kafka publish happens at AFTER_COMMIT (see
+        // UserUpdatedPublisher) - a rollback after this line publishes nothing.
+        events.publishEvent(UserProfileUpdatedEvent.from(updated));
+        return new ProfileUpdateResult(ProfileUpdateResult.Status.UPDATED, updated);
     }
 }

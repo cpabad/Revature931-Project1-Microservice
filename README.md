@@ -25,13 +25,20 @@ a gateway**:
 
 **Databases-per-service:** no cross-database joins exist. `ers_reimbursement` carries a
 replicated reference copy of users/roles **without the password column** — the credential is
-structurally absent from that service's world. With a static seed the copy is simply seeded
-identically; in production it would be kept in sync by events from auth-service (so a profile
-rename propagates eventually, not instantly — that is the consistency trade this layout buys
-its autonomy with).
+structurally absent from that service's world. The copy is **kept in sync by events**: every
+committed profile update in auth-service is published on `auth.user.updated` as a full state
+snapshot (event-carried state transfer), and reimbursement-service overwrites its replica row
+from the event alone — a rename propagates in milliseconds locally, *eventually* by contract.
+That eventual consistency is the price this layout pays for its autonomy, and the sync is
+honest about its edges: publish happens after commit (a crash between the two loses one event
+— the dual-write gap an outbox would close), and replay is harmless because overwriting with
+a snapshot is idempotent by shape.
 
 > **Full history & the monolith it came from:** [`cpabad/Christian-Project1`](https://github.com/cpabad/Christian-Project1)
 > — the original monolith, its hardening/refresh changelog, and the monolith→microservice journey.
+
+(Not drawn above: auth-service also *produces* to Kafka — `auth.user.updated`, the replica-sync
+topic reimbursement-service consumes alongside the request intake.)
 
 ## Stack
 
@@ -42,7 +49,7 @@ its autonomy with).
 | Language / build | Java 17, compiled on JDK 21; Maven multi-module |
 | Persistence | Spring Data JPA + Hibernate; **one PostgreSQL database per service**; associations LAZY with per-query `@EntityGraph` fetch plans; OSIV off |
 | API responses | **DTO records, never entities**: the wire shape is declared per endpoint, so schema changes cannot leak into JSON by default |
-| Messaging | Apache Kafka (spring-kafka); JSON events, each side owns its event record; idempotent consumer (correlation-id ledger) + retries + dead-letter topic |
+| Messaging | Apache Kafka (spring-kafka); JSON events, each side owns its event record; idempotent consumer (correlation-id ledger) + retries + dead-letter topic; users/roles replica synced via `auth.user.updated` snapshots |
 | Legacy intake | Spring-WS contract-first SOAP (XSD → xjc classes; WSDL served at runtime) |
 | Containers | Dockerfile (multi-stage, one recipe for all services) + docker-compose (7 containers) |
 | Security | Self-issued **RS256 JWT**: auth-service signs with a private key + serves JWKS; others verify with the public key (no shared secret, so verifiers cannot mint) |
@@ -107,7 +114,7 @@ export JAVA_HOME=~/jdks/jdk-21.0.11+10        # on this box; any full JDK 17+ wo
 # serves the public half at /.well-known/jwks.json. reimbursement-service fetches that to verify;
 # it defaults to http://localhost:8081/.well-known/jwks.json, override with ERS_JWKS_URI if needed.
 
-mvn test          # all modules, 46 tests green (Kafka tests run against an embedded in-JVM broker;
+mvn test          # all modules, 48 tests green (Kafka tests run against an embedded in-JVM broker;
                   # a real broker is only needed at runtime - localhost:9092 or KAFKA_BOOTSTRAP)
 mvn package -DskipTests
 
@@ -207,6 +214,6 @@ curl -s -X POST localhost:8080/ws -H 'Content-Type: text/xml' -d '<soapenv:Envel
 | reimbursement datasource | `REIMB_DB_URL` / `REIMB_DB_USER` / `REIMB_DB_PASSWORD` | `localhost:5432/ers_reimbursement`, `ers`/`ers` | reimbursement only |
 | `ers.jwt.jwks-uri` | `ERS_JWKS_URI` | `localhost:8081/.well-known/jwks.json` | reimbursement (verifies via auth's public key) |
 | `ers.jwt.ttl-seconds` | `ERS_JWT_TTL_SECONDS` | `3600` | auth only (issuer concern; RS256 keypair is generated at startup, no secret) |
-| Kafka broker | `KAFKA_BOOTSTRAP` | `localhost:9092` | soap-adapter (produce) + reimbursement (consume) |
+| Kafka broker | `KAFKA_BOOTSTRAP` | `localhost:9092` | soap-adapter + auth (produce), reimbursement (consume) |
 | route targets | `AUTH_SERVICE_URL`, `REIMB_SERVICE_URL`, `SOAP_SERVICE_URL` | `localhost:8081/8082/8083` | gateway |
 | gateway host port | `GATEWAY_PORT` (compose only) | `8080` | docker-compose |

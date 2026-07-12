@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.revature.ers.event.RequestSubmissionEvent;
+import com.revature.ers.event.UserProfileUpdatedEvent;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
@@ -75,6 +76,7 @@ public class KafkaConfig {
                         String.class, new StringSerializer())),
                 new DelegatingByTypeSerializer(Map.of(
                         byte[].class, new ByteArraySerializer(),
-                        RequestSubmissionEvent.class, new JsonSerializer<RequestSubmissionEvent>(dltMapper))));
+                        RequestSubmissionEvent.class, new JsonSerializer<RequestSubmissionEvent>(dltMapper),
+                        UserProfileUpdatedEvent.class, new JsonSerializer<UserProfileUpdatedEvent>(dltMapper))));
     }
 }

@@ -71,8 +71,12 @@ services:
       AUTH_DB_PASSWORD: ers
       # RS256: the signing keypair is generated inside this container at startup (JwkConfig);
       # there is no signing secret to inject. Verifiers fetch the public key via JWKS.
+      # Publishes auth.user.updated after profile commits (replica sync, see UserUpdatedPublisher).
+      KAFKA_BOOTSTRAP: kafka:9092
     depends_on:
       auth-db:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
 
   reimbursement-service:
