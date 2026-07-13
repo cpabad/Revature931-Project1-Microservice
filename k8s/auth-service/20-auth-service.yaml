@@ -51,7 +51,9 @@ spec:
           # Microservice); K3s pulls it via the gitlab-registry imagePullSecret above. Registryless
           # local alternative: build, then `docker save ... | sudo k3s ctr images import -` + match tag.
           image: registry.gitlab.com/ca132731/revature931-project1-microservice/auth-service:latest
-          imagePullPolicy: IfNotPresent
+          # Always, because the tag is mutable (:latest): IfNotPresent would keep serving the
+          # node's cached build forever after a re-push. Cheap when unchanged (digest check).
+          imagePullPolicy: Always
           ports:
             - containerPort: 8081
           envFrom:
@@ -59,6 +61,17 @@ spec:
                 name: auth-service-config
             - secretRef:
                 name: auth-service-secret
+          env:
+            # Points JwkConfig at the mounted signing key below. With this set, every replica
+            # loads the SAME RS256 pair (kid = key thumbprint) and restarts keep outstanding
+            # tokens valid; an unloadable path fails the boot rather than silently downgrading
+            # to per-replica ephemeral keys.
+            - name: ERS_JWT_PRIVATE_KEY_PEM
+              value: /etc/ers/keys/jwt-signing.pem
+          volumeMounts:
+            - name: jwt-signing-key
+              mountPath: /etc/ers/keys
+              readOnly: true
           # TCP probes because the app has no health endpoint yet. Adding
           # spring-boot-starter-actuator would let these become httpGet /actuator/health,
           # which also distinguishes "started" (liveness) from "DB-connected" (readiness).
@@ -78,6 +91,16 @@ spec:
               memory: 384Mi
             limits:
               memory: 512Mi
+      volumes:
+        # The RS256 signing key - a PKCS#8 PEM in a Secret created OUT-OF-BAND like the
+        # gitlab-registry pull secret (a private signing key never belongs in git):
+        #   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt-signing.pem
+        #   kubectl -n ers create secret generic auth-jwt-key --from-file=jwt-signing.pem
+        # Deliberately NOT optional: the pod waits (ContainerCreating) until the secret exists,
+        # a visible signal, instead of booting with a key that no other replica shares.
+        - name: jwt-signing-key
+          secret:
+            secretName: auth-jwt-key
 ---
 apiVersion: v1
 kind: Service

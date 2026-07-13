@@ -321,3 +321,37 @@ through the `gitlab-registry` secret; and login as a seeded user returns a 200 +
 `http://ers.local/login` (the JWT header `kid` matches the key served at `/.well-known/jwks.json`).
 See `k8s/README.md` and `opentofu/README.md` for the full run-through, the two-beat pull-secret
 apply, and the Hexapawn-simplification notes.
+
+### Persistent RS256 signing key — multi-replica-safe, restart-proof
+
+The ephemeral startup-generated keypair had two documented limits: a restart invalidated every
+outstanding token mid-TTL, and a second auth-service replica would hold a *different* key — a
+token minted by one replica randomly failing verification against the other's JWKS. Both are
+gone: `ers.jwt.private-key-pem` (env `ERS_JWT_PRIVATE_KEY_PEM`) now points JwkConfig at a
+PKCS#8 PEM, and every replica loads the SAME pair. The kid became the **RFC 7638 JWK
+thumbprint** — a pure function of the key bits, identical across replicas and restarts, so
+verifiers match tokens to the JWKS entry with zero coordination.
+
+Design decisions worth reading in `JwkConfig`:
+- **Unset = ephemeral, unchanged.** Dev and tests stay zero-config; the log line now says
+  "single-replica only" so the limit is visible.
+- **Set-but-unloadable FAILS THE BOOT.** No fallback: a typo'd Secret mount silently
+  downgrading production to per-replica keys is exactly the outage this mode prevents (the
+  `hbm2ddl.auto=validate` fail-fast stance, applied to key material). PKCS#1 ("BEGIN RSA
+  PRIVATE KEY") is rejected with the `openssl genpkey` command that produces the right format.
+- **One file, both halves.** The public key is derived from the private key's CRT params —
+  nothing to drift.
+- **The key is the third out-of-band secret** (after the registry token): in k8s/Tofu it rides
+  in an `auth-jwt-key` Secret mounted read-only at `/etc/ers/keys`, created by hand and never
+  present in git or tfstate. Both deploy paths (raw manifests + `main.tf`) mount it — parity
+  kept; READMEs gained the `openssl genpkey` + `create secret` step.
+
+Five new loader tests (PEM round-trip, thumbprint determinism across loads, distinct keys →
+distinct kids, missing-file fail, PKCS#1 rejected with an actionable message). Suite 59/59.
+
+Live-verified on the K3s slice: key mounted, boot log shows `RS256 pair loaded from
+/etc/ers/keys/jwt-signing.pem`, and the money proof — a token minted BEFORE
+`kubectl rollout restart` still answers `200` on a protected route AFTER it, with the JWKS kid
+unchanged (`8RhT8SaP…`). Under the ephemeral scheme that same call was a guaranteed 401. Also
+flipped `imagePullPolicy` to `Always` in both deploy paths: with a mutable `:latest` tag,
+`IfNotPresent` would serve the node's cached build forever after a re-push.
