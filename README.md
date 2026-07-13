@@ -241,8 +241,12 @@ that hosts the container registry) is a **receive-only mirror**. Never push feat
 mirror — the sync prunes anything that exists only there.
 
 - **GitHub → GitLab (active):** `.github/workflows/mirror.yml` pushes every branch and tag on
-  every push/delete. Credential: the `GITLAB_MIRROR_TOKEN` Actions secret (a GitLab project
-  access token, role Maintainer, scope `write_repository`) — never committed.
+  every push/delete. Credential (preferred): the `GITLAB_MIRROR_SSH_KEY` Actions secret — the
+  private half of an ed25519 pair whose public half is a **write-enabled Deploy Key** on the
+  GitLab project. Deploy keys never expire, so the mirror needs zero credential maintenance.
+  Fallback during transition: the `GITLAB_MIRROR_TOKEN` Actions secret (GitLab project access
+  token, Maintainer / `write_repository`, expires 2027-07) — delete it once the key is live.
+  Neither value is ever committed.
 - **GitLab → GitHub (dormant):** GitLab's built-in push mirroring (Settings → Repository →
   Mirroring repositories) with a GitHub fine-grained PAT (`contents: write`). Configured but
   idle while GitHub is primary.
