@@ -1,0 +1,29 @@
+# ---------------------------------------------------------------------------
+# Jenkins controller for the ERS repos — runs BESIDE the app stack, never inside it.
+# The app's docker-compose.yml (repo root) neither knows nor cares this exists.
+#
+#   start:   docker compose up -d            (from this directory)
+#   UI:      http://localhost:8090           (host 8080 belongs to the ERS gateway)
+#   unlock:  docker compose exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
+#   stop:    docker compose down             (state survives in the jenkins_home volume)
+#   nuke:    docker compose down -v          (removes ALL Jenkins state)
+# ---------------------------------------------------------------------------
+services:
+  jenkins:
+    image: jenkins/jenkins:lts-jdk21
+    container_name: ers-jenkins
+    ports:
+      - "8090:8080"    # web UI
+      - "50000:50000"  # inbound agent port (unused for now; harmless)
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      # The host Docker socket, so pipelines can run their build steps in disposable
+      # containers (the Jenkinsfiles use `agent { docker { ... } }`).
+      # TODO(Opus): the stock image ships NO docker CLI — build a small custom image
+      # (FROM jenkins/jenkins:lts-jdk21, apt-get install docker-cli or docker.io) and add
+      # `group_add: ["<host docker GID>"]` so the jenkins user may use the socket. README.md.
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+volumes:
+  jenkins_home:
