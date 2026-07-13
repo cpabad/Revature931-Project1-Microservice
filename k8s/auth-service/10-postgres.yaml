@@ -1,0 +1,100 @@
+# ---------------------------------------------------------------------------
+# ers_auth database — the stateful half of the template.
+# Four objects that always travel together for a containerized database:
+#   Secret (credentials) · PVC (durable disk) · Deployment (the pod) · Service (stable DNS)
+# The init SQL is a ConfigMap created separately (see k8s/README.md) so this file stays readable.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: auth-db-secret
+  namespace: ers
+type: Opaque
+stringData:
+  # stringData = plaintext in the manifest, base64-encoded by the API server on apply.
+  # Fine for a learning cluster; production keeps this out of git (sealed-secrets / SOPS / a vault).
+  POSTGRES_PASSWORD: ers
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: auth-db-data
+  namespace: ers
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # K3s ships the "local-path" provisioner as the default StorageClass, so this PVC binds with no
+  # extra setup — the volume is a directory on the node. (Naming no storageClassName uses the default.)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-db
+  namespace: ers
+spec:
+  replicas: 1                     # a single Postgres — never scale a plain Deployment DB past 1
+  selector:
+    matchLabels:
+      app: auth-db
+  strategy:
+    type: Recreate               # tear the old pod down before the new one: two pods can't share one RWO disk
+  template:
+    metadata:
+      labels:
+        app: auth-db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: ers_auth
+            - name: POSTGRES_USER
+              value: ers
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: auth-db-secret
+                  key: POSTGRES_PASSWORD
+            # Point PGDATA at a SUBDIRECTORY of the mount. The local-path volume root can contain a
+            # lost+found entry, and Postgres refuses to initdb into a non-empty directory — a classic
+            # first-time-on-Kubernetes trap. A subdir sidesteps it.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d   # postgres runs *.sql here on first init only
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "ers", "-d", "ers_auth"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: auth-db-data
+        - name: init
+          configMap:
+            name: auth-db-init      # created from db/auth/init.sql — see k8s/README.md
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-db
+  namespace: ers
+spec:
+  # ClusterIP (default): reachable only inside the cluster, at the DNS name "auth-db" (or
+  # auth-db.ers.svc.cluster.local). This is the hostname auth-service's AUTH_DB_URL uses.
+  selector:
+    app: auth-db
+  ports:
+    - port: 5432
+      targetPort: 5432
