@@ -15,6 +15,21 @@
 # on GitHub's runners, shares no files, credentials, or runtime with the local
 # Jenkins CI — Jenkins changes must never touch .github/workflows/.
 #
+# Credentials — two supported, SSH preferred (owner-ruled 2026-07-13):
+#   1. GITLAB_MIRROR_SSH_KEY (preferred): the private half of an ed25519 pair
+#      whose PUBLIC half is a write-enabled Deploy Key on the GitLab project
+#      (Settings > Repository > Deploy keys, "Grant write permissions").
+#      Deploy keys have NO expiration — zero rotation, zero maintenance. This
+#      is why SSH wins over the token: the token's July-2027 expiry (and the
+#      fact that GitLab's self-rotate is a permission, not a scheduler) made
+#      it a recurring chore.
+#   2. GITLAB_MIRROR_TOKEN (fallback): a GitLab project access token (role
+#      Maintainer, scope write_repository). Works until it expires; kept so
+#      the mirror runs during the token->key transition. Delete the token
+#      (both the GitHub secret and the GitLab token) once the key is in.
+#   Neither value ever appears in this file. With neither secret set, the job
+#   skips gracefully (green, with a notice).
+#
 # Design notes (why it looks like this):
 #   * clone --mirror, not actions/checkout: checkout fetches only the ref that
 #     triggered the run; a mirror needs every branch and tag.
@@ -27,12 +42,6 @@
 #     ever authored on the GitLab side.
 #   * on: delete: branch/tag deletions don't fire `push`, so without this a
 #     deleted branch would linger on GitLab until the next unrelated push.
-#
-# Credential: Actions secret GITLAB_MIRROR_TOKEN — a GitLab *project access
-# token* (role Maintainer, scope write_repository), added at GitHub repo
-# Settings > Secrets and variables > Actions. NEVER in this file. Until the
-# secret exists, the job skips gracefully (green, with a notice) so the repo
-# isn't wallpapered with red ✗ before setup is done.
 # ---------------------------------------------------------------------------
 name: Mirror to GitLab
 
@@ -57,16 +66,28 @@ jobs:
     steps:
       - name: Push all branches and tags to GitLab
         env:
+          GITLAB_MIRROR_SSH_KEY: ${{ secrets.GITLAB_MIRROR_SSH_KEY }}
           GITLAB_MIRROR_TOKEN: ${{ secrets.GITLAB_MIRROR_TOKEN }}
           SOURCE_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
-          TARGET_URL_PATH: gitlab.com/ca132731/revature931-project1-microservice.git
+          TARGET_PATH: ca132731/revature931-project1-microservice.git
         run: |
-          if [ -z "$GITLAB_MIRROR_TOKEN" ]; then
-            echo "::notice::GITLAB_MIRROR_TOKEN secret not set - mirror skipped (see .github/workflows/mirror.yml header)."
+          if [ -n "$GITLAB_MIRROR_SSH_KEY" ]; then
+            mkdir -p ~/.ssh
+            printf '%s\n' "$GITLAB_MIRROR_SSH_KEY" > ~/.ssh/mirror_key
+            chmod 600 ~/.ssh/mirror_key
+            ssh-keyscan gitlab.com >> ~/.ssh/known_hosts 2>/dev/null
+            export GIT_SSH_COMMAND="ssh -i ~/.ssh/mirror_key -o IdentitiesOnly=yes"
+            TARGET_URL="git@gitlab.com:${TARGET_PATH}"
+            echo "::notice::Mirroring over SSH (deploy key)."
+          elif [ -n "$GITLAB_MIRROR_TOKEN" ]; then
+            TARGET_URL="https://oauth2:${GITLAB_MIRROR_TOKEN}@gitlab.com/${TARGET_PATH}"
+            echo "::notice::Mirroring over HTTPS (project access token — expires; prefer the SSH deploy key)."
+          else
+            echo "::notice::No mirror credential set (GITLAB_MIRROR_SSH_KEY or GITLAB_MIRROR_TOKEN) - mirror skipped."
             exit 0
           fi
           git clone --mirror "$SOURCE_URL" source.git
           cd source.git
-          git push --prune "https://oauth2:${GITLAB_MIRROR_TOKEN}@${TARGET_URL_PATH}" \
+          git push --prune "$TARGET_URL" \
             '+refs/heads/*:refs/heads/*' \
             '+refs/tags/*:refs/tags/*'
