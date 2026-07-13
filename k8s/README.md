@@ -26,26 +26,38 @@ Do one or the other, not both (they'd fight over the same objects).
 | | Service | in-cluster DNS name `auth-service` |
 | `30-ingress.yaml` | Ingress | exposes it outside the cluster via K3s's bundled Traefik |
 
-## Prerequisites (not yet installed on this machine)
+## Prerequisites
 
 ```bash
-# 1. K3s (installs kubectl too). Single command, single binary:
+# 1. K3s (installs kubectl too), if not already running. Single command, single binary:
 curl -sfL https://get.k3s.io | sh -
 # make kubectl usable without sudo:
 mkdir -p ~/.kube && sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config && sudo chown $USER ~/.kube/config
 
-# 2. The auth-service image. Until GitLab's registry is live (see ROADMAP), build locally and
-#    import into K3s's own containerd so no registry is needed:
-JAVA_HOME=~/jdks/jdk-21.0.11+10 mvn -pl auth-service -am package -DskipTests
-docker build --build-arg MODULE=auth-service -t ers-auth-service:local .   # needs Docker
-docker save ers-auth-service:local | sudo k3s ctr images import -
-#    then set image: ers-auth-service:local in 20-auth-service.yaml (and imagePullPolicy stays IfNotPresent)
+# 2. The auth-service image, pushed to the GitLab Container Registry:
+docker build --build-arg MODULE=auth-service \
+  -t registry.gitlab.com/<namespace>/<project>/auth-service:latest .
+docker push registry.gitlab.com/<namespace>/<project>/auth-service:latest
+#    Registryless local alternative (no registry, no pull secret): build, import into K3s's own
+#    containerd, and set image: ers-auth-service:local in 20-auth-service.yaml —
+#      docker build --build-arg MODULE=auth-service -t ers-auth-service:local .
+#      docker save ers-auth-service:local | sudo k3s ctr images import -
+
+# 3. The image-pull secret (a GitLab deploy token, scope read_registry) — created out-of-band,
+#    never in a tracked file. Create it after the namespace exists (see the deploy step):
+kubectl create secret docker-registry gitlab-registry --namespace ers \
+  --docker-server=registry.gitlab.com \
+  --docker-username="<deploy-token-username>" --docker-password="<deploy-token>"
 ```
 
 ## Deploy — raw manifests
 
 ```bash
 kubectl apply -f k8s/auth-service/00-namespace.yaml
+# the pull secret must exist before the auth-service pod can pull its private image (Prereq 3):
+kubectl create secret docker-registry gitlab-registry --namespace ers \
+  --docker-server=registry.gitlab.com \
+  --docker-username="<deploy-token-username>" --docker-password="<deploy-token>"
 # the init SQL goes in as a ConfigMap from the real file (the idiomatic --from-file pattern):
 kubectl -n ers create configmap auth-db-init --from-file=db/auth/init.sql
 kubectl apply -f k8s/auth-service/          # the rest of the folder
@@ -70,6 +82,8 @@ tofu destroy    # one command removes it all
 ```
 
 The Tofu config reads `db/auth/init.sql` via `file()`, so the ConfigMap step is automatic there.
+See `opentofu/README.md` for the pull-secret **two-beat apply** (namespace first, then the secret,
+then the rest — `kubernetes_deployment` waits for rollout, which blocks until the secret exists).
 
 ## Copying this for Hexapawn
 
@@ -81,6 +95,8 @@ The template is deliberately one service + one database. For a simplified Hexapa
 
 ## Status
 
-**Written, not yet run** — K3s/kubectl/tofu are not installed on the dev box (same honest caveat
-as the Docker layer). The manifests are YAML-validated and the Tofu is structurally complete;
-first `kubectl apply` / `tofu apply` on a K3s-equipped machine is the remaining step.
+**Applied and verified green** on local K3s (v1.36.2) via the OpenTofu path: `tofu apply` brings up
+`auth-db` + `auth-service` + the Traefik Ingress, the image pulls from the GitLab registry through
+the `gitlab-registry` secret, and login as a seeded user returns a 200 + RS256 JWT through
+`http://ers.local/login`. The raw `k8s/` manifests are the equivalent reference — deploy with one
+path or the other, never both. See `opentofu/README.md` for the verified apply sequence.

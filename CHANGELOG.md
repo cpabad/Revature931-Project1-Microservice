@@ -297,8 +297,15 @@ so the same objects can be applied with either tool:
   Deployment / Service, init SQL mounted from a ConfigMap built off `db/auth/init.sql`), then
   auth-service (ConfigMap + Secret via `envFrom` / Deployment / Service), then a Traefik Ingress.
 - **`opentofu/main.tf`** — the identical objects as infrastructure-as-code (kubernetes provider,
-  10 resources) so `tofu plan` diffs before touching the cluster and `tofu destroy` cleans up in
-  one command. Reads the same `db/auth/init.sql` via `file()` — one source of truth for the seed.
+  11 resources incl. a `kubernetes_ingress_v1` for parity with the raw manifests) so `tofu plan`
+  diffs before touching the cluster and `tofu destroy` cleans up in one command. Reads the same
+  `db/auth/init.sql` via `file()` — one source of truth for the seed.
+
+Refreshed against origin/main before the first apply: the dead HS256 `ERS_JWT_SECRET` is gone from
+both paths (auth-service signs RS256 with an ephemeral keypair generated at startup and serves the
+public half at `/.well-known/jwks.json` — nothing to declare), and the private image is pulled from
+the GitLab Container Registry via a `gitlab-registry` imagePullSecret created out-of-band (a deploy
+token, never a tracked file or Tofu state).
 
 Deliberately the smallest possible surface (one service, one DB) because it's the pattern to copy —
 for the other ERS services, or a simplified Hexapawn backend. Design notes captured as comments,
@@ -308,7 +315,9 @@ share one RWO disk); probes are TCP for now (adding actuator would upgrade them 
 `httpGet /actuator/health`); the image is a GitLab-registry placeholder with a documented
 `k3s ctr images import` path for registry-less local testing.
 
-**Status: written, not yet run** — K3s/kubectl/tofu aren't installed on the dev box (same honest
-caveat as the Docker layer). The YAML is schema-shaped and validated as parseable; the HCL is
-structurally complete. First `kubectl apply` / `tofu apply` on a K3s machine is the remaining step.
-See `k8s/README.md` for the full run-through and the Hexapawn-simplification notes.
+**Status: applied and verified green** on local K3s (v1.36.2) via the OpenTofu path. `tofu apply`
+brings up `auth-db` + `auth-service` + the Traefik Ingress; the image pulls from the GitLab registry
+through the `gitlab-registry` secret; and login as a seeded user returns a 200 + RS256 JWT through
+`http://ers.local/login` (the JWT header `kid` matches the key served at `/.well-known/jwks.json`).
+See `k8s/README.md` and `opentofu/README.md` for the full run-through, the two-beat pull-secret
+apply, and the Hexapawn-simplification notes.
