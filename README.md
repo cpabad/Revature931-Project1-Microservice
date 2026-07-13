@@ -232,3 +232,25 @@ curl -s --cacert certs/ca.crt --cert certs/acme.crt --key certs/acme.key \
 | Kafka broker | `KAFKA_BOOTSTRAP` | `localhost:9092` | soap-adapter + auth (produce), reimbursement (consume) |
 | route targets | `AUTH_SERVICE_URL`, `REIMB_SERVICE_URL`, `SOAP_SERVICE_URL` | `localhost:8081/8082/8083` | gateway |
 | gateway host port | `GATEWAY_PORT` (compose only) | `8080` | docker-compose |
+
+## Repo mirroring (GitHub ⇄ GitLab)
+
+This repo lives on two hosts so it stays host-agnostic: **GitHub is the primary** (PRs and merges
+happen there) and the GitLab twin (`ca132731/Revature931-Project1-Microservice`, the same project
+that hosts the container registry) is a **receive-only mirror**. Never push feature work to the
+mirror — the sync prunes anything that exists only there.
+
+- **GitHub → GitLab (active):** `.github/workflows/mirror.yml` pushes every branch and tag on
+  every push/delete. Credential: the `GITLAB_MIRROR_TOKEN` Actions secret (a GitLab project
+  access token, role Maintainer, scope `write_repository`) — never committed.
+- **GitLab → GitHub (dormant):** GitLab's built-in push mirroring (Settings → Repository →
+  Mirroring repositories) with a GitHub fine-grained PAT (`contents: write`). Configured but
+  idle while GitHub is primary.
+
+**Primary-flip runbook** (if the project ever moves its front door to GitLab): 1) merge/close all
+open GitHub PRs; 2) disable the GitHub Action (delete `mirror.yml` or disable the workflow in the
+Actions tab); 3) enable/verify GitLab push mirroring toward GitHub; 4) update this section — the
+"primary" is wherever merges happen, and there is exactly one at a time.
+
+The mirror is deliberately independent of the local Jenkins CI (`jenkins/`): it runs on GitHub's
+runners with its own credential. Jenkins work must never modify `.github/workflows/`.
