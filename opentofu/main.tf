@@ -42,17 +42,14 @@ variable "db_password" {
   sensitive   = true
 }
 
-variable "jwt_secret" {
-  description = "Shared HS256 secret (>=32 chars); reimbursement-service verifies with the same value"
-  type        = string
-  default     = "dev-only-insecure-ers-jwt-secret-change-me-32+"
-  sensitive   = true
-}
+# No jwt_secret variable: auth-service signs RS256 with an EPHEMERAL RSA keypair generated at
+# startup (see JwkConfig) and serves the public half at /.well-known/jwks.json. There is no
+# signing secret to declare here. A JWKS verifier URI arrives with the full stack, not this slice.
 
 variable "auth_image" {
-  description = "auth-service image (set once GitLab registry is live)"
+  description = "auth-service image in the GitLab Container Registry (project ca132731/Revature931-Project1-Microservice)"
   type        = string
-  default     = "registry.gitlab.com/CHANGEME/ers/auth-service:latest"
+  default     = "registry.gitlab.com/ca132731/revature931-project1-microservice/auth-service:latest"
 }
 
 resource "kubernetes_namespace" "ers" {
@@ -214,7 +211,6 @@ resource "kubernetes_secret" "auth_service" {
   }
   data = {
     AUTH_DB_PASSWORD = var.db_password
-    ERS_JWT_SECRET   = var.jwt_secret
   }
 }
 
@@ -233,6 +229,11 @@ resource "kubernetes_deployment" "auth_service" {
         labels = { app = "auth-service" }
       }
       spec {
+        # Pull the private image from the GitLab Container Registry. The gitlab-registry secret is
+        # created out-of-band (kubectl create secret docker-registry ...) so no token lands in Tofu.
+        image_pull_secrets {
+          name = "gitlab-registry"
+        }
         container {
           name              = "auth-service"
           image             = var.auth_image
@@ -289,6 +290,38 @@ resource "kubernetes_service" "auth_service" {
     port {
       port        = 8081
       target_port = 8081
+    }
+  }
+}
+
+# ---- ingress: expose the slice OUTSIDE the cluster via K3s's bundled Traefik ---------------------
+# Parity with k8s/auth-service/30-ingress.yaml — the raw-manifest path had an Ingress but the Tofu
+# path did not, so `tofu apply` alone could not serve http://ers.local/login. This closes that gap.
+# K3s ships Traefik as its default IngressController, so no controller install is needed; add
+# `127.0.0.1 ers.local` to /etc/hosts and the host resolves locally. When the full stack lands, the
+# gateway becomes the single backend behind "/" and the per-service routes move behind it.
+resource "kubernetes_ingress_v1" "ers" {
+  metadata {
+    name      = "ers-ingress"
+    namespace = kubernetes_namespace.ers.metadata[0].name
+  }
+  spec {
+    rule {
+      host = "ers.local"
+      http {
+        path {
+          path      = "/"
+          path_type = "Prefix"
+          backend {
+            service {
+              name = kubernetes_service.auth_service.metadata[0].name
+              port {
+                number = 8081
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

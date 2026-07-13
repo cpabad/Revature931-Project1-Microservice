@@ -1,0 +1,21 @@
+# OpenTofu / Terraform working files — never committed.
+# The provider cache and any local state/plan are machine-specific or secret-bearing.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
+# Variable files may carry secrets (db passwords, tokens) — keep them local.
+# Commit a *.tfvars.example instead if you need to document the shape.
+*.tfvars
+*.tfvars.json
+
+# Override files are a local-only escape hatch.
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# DO commit .terraform.lock.hcl — it pins provider versions for reproducible init.

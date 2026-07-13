@@ -2,7 +2,7 @@
 # auth-service — the stateless half of the template.
 # The split that matters: NON-secret config -> ConfigMap, secrets -> Secret. Both are surfaced to
 # the container with envFrom, so the app reads them as ordinary environment variables (the same
-# AUTH_DB_URL / ERS_JWT_SECRET it uses in docker-compose and local dev).
+# AUTH_DB_URL / AUTH_DB_PASSWORD it uses in docker-compose and local dev).
 # ---------------------------------------------------------------------------
 apiVersion: v1
 kind: ConfigMap
@@ -22,8 +22,9 @@ metadata:
 type: Opaque
 stringData:
   AUTH_DB_PASSWORD: ers
-  # HS256 needs >=32 chars. reimbursement-service would carry the SAME value to verify tokens.
-  ERS_JWT_SECRET: dev-only-insecure-ers-jwt-secret-change-me-32+
+  # No JWT secret here: auth-service signs RS256 with an EPHEMERAL RSA keypair generated at startup
+  # (see JwkConfig) and publishes the public half at /.well-known/jwks.json. There is no signing
+  # secret to configure, share, or leak — verifiers fetch the key, they never hold one.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -40,12 +41,16 @@ spec:
       labels:
         app: auth-service
     spec:
+      # Pull the private image from the GitLab Container Registry. The secret is created out-of-band
+      # (never in a tracked file): kubectl create secret docker-registry gitlab-registry -n ers ...
+      imagePullSecrets:
+        - name: gitlab-registry
       containers:
         - name: auth-service
-          # CHANGEME once GitLab is set up: registry.gitlab.com/<your-namespace>/ers/auth-service:latest
-          # For a local K3s test with no registry, build the image, import it into K3s's containerd
-          #   (`docker save ... | sudo k3s ctr images import -`), and set the tag below to match.
-          image: registry.gitlab.com/CHANGEME/ers/auth-service:latest
+          # Private image in the GitLab Container Registry (project ca132731/Revature931-Project1-
+          # Microservice); K3s pulls it via the gitlab-registry imagePullSecret above. Registryless
+          # local alternative: build, then `docker save ... | sudo k3s ctr images import -` + match tag.
+          image: registry.gitlab.com/ca132731/revature931-project1-microservice/auth-service:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8081

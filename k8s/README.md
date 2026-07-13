@@ -21,7 +21,7 @@ Do one or the other, not both (they'd fight over the same objects).
 | | Deployment | the Postgres pod (`Recreate` strategy — two pods can't share one RWO disk) |
 | | Service | stable in-cluster DNS name `auth-db` — what the app connects to |
 | `20-auth-service.yaml` | ConfigMap | non-secret config (`AUTH_DB_URL`, `AUTH_DB_USER`) |
-| | Secret | `AUTH_DB_PASSWORD`, `ERS_JWT_SECRET` |
+| | Secret | `AUTH_DB_PASSWORD` (no JWT secret — RS256 keypair is generated at startup) |
 | | Deployment | the auth-service pod; `envFrom` injects the ConfigMap + Secret as env vars |
 | | Service | in-cluster DNS name `auth-service` |
 | `30-ingress.yaml` | Ingress | exposes it outside the cluster via K3s's bundled Traefik |
