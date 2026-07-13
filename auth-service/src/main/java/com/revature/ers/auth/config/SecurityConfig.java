@@ -17,13 +17,13 @@ import org.springframework.security.web.SecurityFilterChain;
  * Spring Security wiring for the ERS microservice - replaces the monolith's three hand-rolled
  * servlet filters (SessionFilter / EmployeeFilter / ManagerFilter) with declarative config.
  *
- * This class is the VALIDATION side of the JWT story (Step 1). The minting side (JwtEncoder +
- * /login) arrives in Step 2; role rules in Step 3.
+ * This class owns the filter chain and authorization rules; the JWT key material and the
+ * JwtEncoder/JwtDecoder beans live in JwkConfig (RS256 keypair + JWKS endpoint).
  *
  * How a request flows now:
  *   1. OAuth2 Resource Server's BearerTokenAuthenticationFilter pulls the token out of the
  *      "Authorization: Bearer <jwt>" header.
- *   2. Our JwtDecoder bean verifies the HS256 signature + expiry (throws -> 401 if bad).
+ *   2. JwkConfig's JwtDecoder verifies the RS256 signature + expiry (throws -> 401 if bad).
  *   3. Our JwtAuthenticationConverter turns the validated claims into an Authentication, mapping
  *      the "role" claim to a Spring authority. That Authentication lands in the SecurityContext.
  *   4. authorizeHttpRequests decides allow/deny. Right now: everything needs a valid token.
