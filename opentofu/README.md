@@ -42,6 +42,14 @@ via `file()`, PVC, Deployment `postgres:16-alpine`, Service `auth-db`), then the
      --docker-username="<deploy-token-username>" --docker-password="<deploy-token>"
    ```
 
+4. **The RS256 JWT signing key** — same out-of-band discipline (a private signing key in Tofu
+   state would be readable by anyone with the state file). All replicas mount this ONE key, so
+   tokens survive pod restarts and scale-out; the kid is the key's thumbprint:
+   ```bash
+   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt-signing.pem
+   kubectl -n ers create secret generic auth-jwt-key --from-file=jwt-signing.pem
+   ```
+
 ## Apply — the two-beat sequence
 
 `kubernetes_deployment` **waits for rollout**, and the pod cannot roll out until the pull secret
@@ -56,8 +64,9 @@ tofu init
 # 1. namespace only, so there is somewhere to put the secret
 tofu apply -target=kubernetes_namespace.ers
 
-# 2. create the pull secret (Prerequisite 3) into the now-existing ers namespace
+# 2. create BOTH out-of-band secrets (Prerequisites 3 + 4) into the now-existing ers namespace
 #    kubectl create secret docker-registry gitlab-registry --namespace ers ...
+#    kubectl -n ers create secret generic auth-jwt-key --from-file=jwt-signing.pem
 
 # 3. the rest — read the plan diff first (the whole point over kubectl), then apply
 tofu plan            # 10 resources to add; secret data shows as (sensitive value)
@@ -83,7 +92,7 @@ publishes its public half — no shared secret in the system.
 
 ```bash
 tofu destroy               # removes the 10 Tofu-managed objects
-kubectl -n ers delete secret gitlab-registry   # the out-of-band secret Tofu does not own
+kubectl -n ers delete secret gitlab-registry auth-jwt-key   # the out-of-band secrets Tofu does not own
 ```
 
 ## Variables
@@ -95,9 +104,12 @@ kubectl -n ers delete secret gitlab-registry   # the out-of-band secret Tofu doe
 | `db_password` | `ers` | dev default; lands in a k8s Secret, never a tracked file |
 | `auth_image` | `registry.gitlab.com/ca132731/revature931-project1-microservice/auth-service:latest` | your pushed image |
 
-There is deliberately **no `jwt_secret`** variable: auth-service signs RS256 with an ephemeral
-keypair generated at startup and serves the public half at `/.well-known/jwks.json`. A JWKS
-verifier URI arrives with the full stack, not this single-service slice.
+There is deliberately **no `jwt_secret`** variable: auth-service signs RS256 and serves the public
+half at `/.well-known/jwks.json`. In this deployment the keypair is a PKCS#8 PEM mounted from the
+out-of-band `auth-jwt-key` Secret (Prerequisite 4) — persistent across restarts and shared by all
+replicas, never in git or Tofu state. Without the mount (bare local runs) the service generates an
+ephemeral pair instead, which is single-replica only. A JWKS verifier URI arrives with the full
+stack, not this single-service slice.
 
 ## Status
 

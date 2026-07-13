@@ -21,8 +21,8 @@ Do one or the other, not both (they'd fight over the same objects).
 | | Deployment | the Postgres pod (`Recreate` strategy — two pods can't share one RWO disk) |
 | | Service | stable in-cluster DNS name `auth-db` — what the app connects to |
 | `20-auth-service.yaml` | ConfigMap | non-secret config (`AUTH_DB_URL`, `AUTH_DB_USER`) |
-| | Secret | `AUTH_DB_PASSWORD` (no JWT secret — RS256 keypair is generated at startup) |
-| | Deployment | the auth-service pod; `envFrom` injects the ConfigMap + Secret as env vars |
+| | Secret | `AUTH_DB_PASSWORD` (the RS256 signing key rides in its own out-of-band Secret, below) |
+| | Deployment | the auth-service pod; `envFrom` injects the ConfigMap + Secret; mounts `auth-jwt-key` |
 | | Service | in-cluster DNS name `auth-service` |
 | `30-ingress.yaml` | Ingress | exposes it outside the cluster via K3s's bundled Traefik |
 
@@ -48,16 +48,22 @@ docker push registry.gitlab.com/<namespace>/<project>/auth-service:latest
 kubectl create secret docker-registry gitlab-registry --namespace ers \
   --docker-server=registry.gitlab.com \
   --docker-username="<deploy-token-username>" --docker-password="<deploy-token>"
+
+# 4. The RS256 JWT signing key (PKCS#8 PEM) — also out-of-band, same discipline. All replicas
+#    load this ONE key (kid = its thumbprint), so tokens survive restarts and scale-out:
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt-signing.pem
+kubectl -n ers create secret generic auth-jwt-key --from-file=jwt-signing.pem
 ```
 
 ## Deploy — raw manifests
 
 ```bash
 kubectl apply -f k8s/auth-service/00-namespace.yaml
-# the pull secret must exist before the auth-service pod can pull its private image (Prereq 3):
+# both out-of-band secrets must exist before the auth-service pod can start (Prereqs 3 + 4):
 kubectl create secret docker-registry gitlab-registry --namespace ers \
   --docker-server=registry.gitlab.com \
   --docker-username="<deploy-token-username>" --docker-password="<deploy-token>"
+kubectl -n ers create secret generic auth-jwt-key --from-file=jwt-signing.pem
 # the init SQL goes in as a ConfigMap from the real file (the idiomatic --from-file pattern):
 kubectl -n ers create configmap auth-db-init --from-file=db/auth/init.sql
 kubectl apply -f k8s/auth-service/          # the rest of the folder

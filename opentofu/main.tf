@@ -235,9 +235,12 @@ resource "kubernetes_deployment" "auth_service" {
           name = "gitlab-registry"
         }
         container {
-          name              = "auth-service"
-          image             = var.auth_image
-          image_pull_policy = "IfNotPresent"
+          name  = "auth-service"
+          image = var.auth_image
+          # Always, because the tag is mutable (:latest): IfNotPresent would keep serving the
+          # node's cached build forever after a re-push. Cheap when unchanged (digest check).
+          # Pinning by digest/version tag would make IfNotPresent correct again.
+          image_pull_policy = "Always"
           port {
             container_port = 8081
           }
@@ -250,6 +253,18 @@ resource "kubernetes_deployment" "auth_service" {
             secret_ref {
               name = kubernetes_secret.auth_service.metadata[0].name
             }
+          }
+          # Points JwkConfig at the mounted signing key (volume below). Every replica loads the
+          # SAME RS256 pair (kid = key thumbprint), so tokens survive restarts and scale-out;
+          # an unloadable path fails the boot rather than downgrading to per-replica keys.
+          env {
+            name  = "ERS_JWT_PRIVATE_KEY_PEM"
+            value = "/etc/ers/keys/jwt-signing.pem"
+          }
+          volume_mount {
+            name       = "jwt-signing-key"
+            mount_path = "/etc/ers/keys"
+            read_only  = true
           }
           readiness_probe {
             tcp_socket {
@@ -273,6 +288,18 @@ resource "kubernetes_deployment" "auth_service" {
             limits = {
               memory = "512Mi"
             }
+          }
+        }
+        # The RS256 signing key - a PKCS#8 PEM in a Secret created OUT-OF-BAND like the
+        # gitlab-registry pull secret (a private signing key never belongs in git OR tfstate):
+        #   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt-signing.pem
+        #   kubectl -n ers create secret generic auth-jwt-key --from-file=jwt-signing.pem
+        # Deliberately NOT optional: the pod waits until the secret exists (create it in the
+        # same beat as gitlab-registry) instead of booting with a per-replica ephemeral key.
+        volume {
+          name = "jwt-signing-key"
+          secret {
+            secret_name = "auth-jwt-key"
           }
         }
       }
