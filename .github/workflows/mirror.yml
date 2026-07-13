@@ -1,0 +1,72 @@
+# ---------------------------------------------------------------------------
+# GitHub -> GitLab repo mirror.
+#
+# Keeps the GitLab twin (ca132731/Revature931-Project1-Microservice — the same
+# project that hosts the container registry) byte-identical to GitHub, so the
+# project stays host-agnostic: either host can be cloned from years from now.
+#
+# Topology rule: GitHub is the PRIMARY (PRs/merges happen there); GitLab is a
+# RECEIVE-ONLY mirror. Never push feature work to GitLab while this is active —
+# --prune below would delete anything that exists only there. The reverse
+# direction (GitLab -> GitHub push mirroring, for a primary flip) is configured
+# in GitLab's UI, not here. See README.md "Repo mirroring".
+#
+# Ownership rule: this file is the mirroring system, entire and alone. It runs
+# on GitHub's runners, shares no files, credentials, or runtime with the local
+# Jenkins CI — Jenkins changes must never touch .github/workflows/.
+#
+# Design notes (why it looks like this):
+#   * clone --mirror, not actions/checkout: checkout fetches only the ref that
+#     triggered the run; a mirror needs every branch and tag.
+#   * explicit refspecs, not `push --mirror`: a --mirror clone also carries
+#     GitHub-internal refs (refs/pull/*) that GitLab rejects; we push exactly
+#     refs/heads/* and refs/tags/*.
+#   * --prune: a branch deleted on GitHub is deleted on GitLab — receive-only
+#     means GitLab never accumulates ghosts.
+#   * leading + (force): survives history rewrites; safe because nothing is
+#     ever authored on the GitLab side.
+#   * on: delete: branch/tag deletions don't fire `push`, so without this a
+#     deleted branch would linger on GitLab until the next unrelated push.
+#
+# Credential: Actions secret GITLAB_MIRROR_TOKEN — a GitLab *project access
+# token* (role Maintainer, scope write_repository), added at GitHub repo
+# Settings > Secrets and variables > Actions. NEVER in this file. Until the
+# secret exists, the job skips gracefully (green, with a notice) so the repo
+# isn't wallpapered with red ✗ before setup is done.
+# ---------------------------------------------------------------------------
+name: Mirror to GitLab
+
+on:
+  push:
+    branches: ['**']
+    tags: ['**']
+  delete:
+
+# One mirror push at a time; queued runs still deliver the newest state because
+# each run re-clones from scratch.
+concurrency:
+  group: mirror-to-gitlab
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Push all branches and tags to GitLab
+        env:
+          GITLAB_MIRROR_TOKEN: ${{ secrets.GITLAB_MIRROR_TOKEN }}
+          SOURCE_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+          TARGET_URL_PATH: gitlab.com/ca132731/revature931-project1-microservice.git
+        run: |
+          if [ -z "$GITLAB_MIRROR_TOKEN" ]; then
+            echo "::notice::GITLAB_MIRROR_TOKEN secret not set - mirror skipped (see .github/workflows/mirror.yml header)."
+            exit 0
+          fi
+          git clone --mirror "$SOURCE_URL" source.git
+          cd source.git
+          git push --prune "https://oauth2:${GITLAB_MIRROR_TOKEN}@${TARGET_URL_PATH}" \
+            '+refs/heads/*:refs/heads/*' \
+            '+refs/tags/*:refs/tags/*'
