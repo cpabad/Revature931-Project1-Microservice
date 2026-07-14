@@ -1,5 +1,5 @@
 /*
- * ERS microservice CI pipeline.
+ * ERS microservice CI pipeline — FULLY IMPLEMENTED.
  *
  * Runs on the controller (agent any) so stages can orchestrate sibling containers over the
  * docker socket, exactly like the monolith pipeline (the working reference). Heavy work still
@@ -7,12 +7,47 @@
  * the controller only holds the docker CLI. Maven cache is workspace-local (-Dmaven.repo.local),
  * so it survives between builds without the root-owned named-volume permission headaches.
  *
- * State: Build + Unit tests are implemented; SCA / SAST / Secrets / Discord are inert echo
- * stubs, implemented one PR at a time (order + locked decisions: monolith ROADMAP.md Phase 7.5).
+ * Scan policy (owner-ruled, same as the monolith): WARN-THEN-RATCHET. SCA and SAST findings
+ * mark the build UNSTABLE (yellow) — visible, never ignored, but not red — until the initial
+ * backlog is triaged; then delete the catchError wrappers to make them hard gates. The secrets
+ * scan is a hard RED from day one: a credential in the working tree is never a warning.
+ *
+ * Infra notes (mirrors the monolith header):
+ *   - Controller runs in Docker with the host socket (docker-outside-of-docker). Workspace paths
+ *     only reach sibling containers through .inside() (--volumes-from) — never `docker run -v`.
+ *   - Scanner images ship ENTRYPOINTs; .inside() needs --entrypoint='' or the plugin's `cat`
+ *     keep-alive becomes `trivy cat` and dies.
+ *   - SpotBugs analyzes BYTECODE and its FindSecBugs detectors are wired in via the one pom
+ *     touch (spotbugs-maven-plugin, no <executions>) — so a plain `mvn package` is unchanged and
+ *     the SAST stage compiles first, then runs `mvn spotbugs:check`.
  *
  * Boundary: this file and jenkins/ are the whole CI footprint. The GitHub->GitLab mirror
  * (.github/workflows/mirror.yml) is a separate, Fable-owned system — never modify it here.
  */
+
+def notifyDiscord(String message) {
+  // Webhook URL lives ONLY in the Jenkins credentials store (Secret text, id: discord-webhook).
+  // No credential yet -> log and move on; notification must never break the build.
+  try {
+    withCredentials([string(credentialsId: 'discord-webhook', variable: 'DISCORD_URL')]) {
+      def safe = message.replace('\\', '\\\\').replace('"', '\\"')
+      writeFile file: '.discord-payload.json', text: "{\"content\": \"${safe}\"}"
+      sh 'curl -fsS -o /dev/null -H "Content-Type: application/json" -d @.discord-payload.json "$DISCORD_URL" || true'
+    }
+  } catch (ignored) {
+    echo "Discord notify skipped - add a Secret-text credential with id 'discord-webhook' to enable pings."
+  }
+}
+
+def blame() {
+  // "Who to blame" — on a one-person team this is a mirror, but it's the habit that counts.
+  try {
+    return sh(script: "git log -1 --pretty='%an'", returnStdout: true).trim()
+  } catch (ignored) {
+    return 'unknown'
+  }
+}
+
 pipeline {
   agent any   // the controller node — it owns the docker CLI; heavy work runs in containers
 
@@ -29,7 +64,9 @@ pipeline {
 
   environment {
     MAVEN_IMAGE = 'maven:3.9-eclipse-temurin-21'   // JDK 21 toolchain, matching the local build
-    MVN = 'mvn -B -ntp -Dmaven.repo.local="$WORKSPACE/.m2repo"'
+    // Canonical local-repo path (~/.m2/repository under a workspace HOME): survives between builds
+    // AND is exactly where Trivy looks to resolve BOM-managed versions offline (see the SCA stage).
+    MVN = 'mvn -B -ntp -Dmaven.repo.local="$WORKSPACE/.m2/repository"'
   }
 
   stages {
@@ -100,41 +137,95 @@ pipeline {
       }
     }
 
-    stage('SCA — dependency CVEs') {
+    stage('SCA — dependency CVEs (Trivy)') {
       steps {
-        // TODO(Opus): OWASP Dependency-Check (dependency-check-maven) or Trivy fs over the
-        // dependency tree; fail on CVSS >= 7. Cache the NVD database in a named volume or
-        // every build re-downloads ~20 min of CVE data.
-        echo 'STUB — SCA scan not wired yet'
+        script {
+          // Trivy over Dependency-Check on purpose: no NVD API key to manage (credential friction
+          // is the enemy in this shop). `trivy fs` finds Java dependencies through each module's
+          // pom.xml, and to report a CVE it must first RESOLVE the versions the Spring Cloud BOM
+          // manages — which means reading the local Maven repository. We point Trivy's HOME at the
+          // workspace so ~/.m2/repository IS the cache the Build stage already populated: every
+          // version resolves offline. Without it Trivy hits Maven Central and gets 429-throttled
+          // into a FATAL. Skip the two workspace caches (.m2 = the Maven repo we resolve FROM, not
+          // a scan target; .trivy-cache = Trivy's own vuln DB) and .git, so we scan OUR modules.
+          docker.image('aquasec/trivy:latest').inside("--entrypoint='' -e HOME=$WORKSPACE -e TRIVY_CACHE_DIR=$WORKSPACE/.trivy-cache") {
+            catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE',
+                       message: 'SCA findings (HIGH/CRITICAL) — warn-mode; see log. Ratchet: delete this catchError.') {
+              sh 'trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --no-progress --skip-dirs .m2 --skip-dirs .trivy-cache --skip-dirs .git .'
+            }
+          }
+        }
       }
     }
 
-    stage('SAST — static analysis') {
+    stage('SAST — static analysis (SpotBugs + FindSecBugs)') {
       steps {
-        // TODO(Opus): SpotBugs + FindSecBugs via spotbugs-maven-plugin. This is the ONE
-        // allowed pom.xml touch (build-plugin scope only — the shipped artifact is unchanged).
-        echo 'STUB — SAST scan not wired yet'
+        script {
+          // SpotBugs analyzes BYTECODE, so compile the reactor first (skip tests — the Unit tests
+          // stage owns those). The FindSecBugs detectors ride in via the pom's spotbugs-maven-
+          // plugin block; because that block has no <executions>, `mvn spotbugs:check` is the only
+          // thing that triggers analysis — a plain build stays identical.
+          docker.image(env.MAVEN_IMAGE).inside {
+            catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE',
+                       message: 'SAST findings — warn-mode; see log. Ratchet: delete this catchError.') {
+              // --fail-at-end: analyze EVERY module before failing, so one module's findings don't
+              // hide the rest (a plain reactor stops at the first failure).
+              sh "$MVN -DskipTests compile spotbugs:check --fail-at-end"
+            }
+          }
+        }
       }
     }
 
-    stage('Secrets scan') {
+    stage('Secrets — gitleaks (hard gate)') {
       steps {
-        // TODO(Opus): gitleaks (official docker image) over the checkout; fail on any hit.
-        // The P3 git-filter-repo history scrub is the war story this stage prevents.
-        echo 'STUB — secrets scan not wired yet'
+        script {
+          // Working tree only (--no-git): history contains long-revoked keys from before the P3
+          // git-filter-repo scrub; a baseline history scan is a later, separate step. --redact so
+          // a caught secret is not immortalized in the CI log. NO catchError: a live secret in
+          // current files is red, full stop.
+          // The workspace persists between builds (that's how the .m2 Maven cache works), so the
+          // allowlist keeps gitleaks off cached third-party jars and build output — we scan OUR
+          // files, not the internet's.
+          sh '''
+            cat > .gitleaks-ci.toml <<'EOF'
+[extend]
+useDefault = true
+
+[allowlist]
+paths = [
+  # Persistent-workspace caches and build output - other people's jars, not our secrets.
+  ".m2/.*",
+  ".trivy-cache/.*",
+  ".*/target/.*",
+  # Self-signed, script-generated (scripts/gen-partner-certs.sh) SOAP mTLS demo certs. They are
+  # gitignored, so they never exist in a CI checkout; allowlisted so a LOCAL run does not false-red
+  # on known throwaway dev keys. Never production material.
+  "certs/.*",
+  # False positive: line 31 is a "-----BEGIN PRIVATE KEY-----" PEM-armor STRING in a test that
+  # GENERATES a fresh RSA keypair at runtime - no secret is committed. The ideal long-term fix is
+  # an inline `gitleaks:allow` on that line, but that edits app code (out of this PR's scope).
+  "auth-service/src/test/java/com/revature/ers/auth/config/JwkConfigTest\\.java",
+]
+EOF
+          '''
+          docker.image('zricethezav/gitleaks:latest').inside("--entrypoint=''") {
+            sh 'gitleaks detect --source . --no-git --redact --verbose --config .gitleaks-ci.toml'
+          }
+        }
       }
     }
   }
 
   post {
     failure {
-      // TODO(Opus): Discord webhook — status, branch, commit, author (the "who to blame" ping).
-      // Webhook URL from the Jenkins credentials store (id: discord-webhook), NEVER in this file.
-      echo 'STUB — Discord failure notification not wired yet'
+      script { notifyDiscord("FAILURE: **${env.JOB_NAME} #${env.BUILD_NUMBER}** failed on `${env.GIT_BRANCH ?: 'main'}` — author: ${blame()} — ${env.BUILD_URL}") }
+    }
+    unstable {
+      script { notifyDiscord("WARNING: **${env.JOB_NAME} #${env.BUILD_NUMBER}** is UNSTABLE — a security scan reported findings (warn-mode) — ${env.BUILD_URL}") }
     }
     fixed {
-      // TODO(Opus): the recovery ping — back to green.
-      echo 'STUB — Discord recovery notification not wired yet'
+      script { notifyDiscord("RECOVERED: **${env.JOB_NAME} #${env.BUILD_NUMBER}** is passing again — ${env.BUILD_URL}") }
     }
   }
 }

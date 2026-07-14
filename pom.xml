@@ -50,4 +50,34 @@
             </dependency>
         </dependencies>
     </dependencyManagement>
+
+    <!-- CI-only static analysis (SAST). This block is inherited by all four modules, but it has
+         NO <executions>, so it never binds to the build lifecycle: `mvn package` / `mvn test` are
+         byte-for-byte identical whether or not it is present, and the shipped jars are unchanged.
+         The Jenkins SAST stage invokes it explicitly with `mvn spotbugs:check`; nothing else does.
+         SpotBugs analyzes compiled bytecode (compile the reactor first); the FindSecBugs plugin
+         adds the security detectors (taint/injection/crypto) on top of SpotBugs' bug patterns.
+         This is the single pom touch the CI charter permits - a build-time analyzer, not a
+         runtime dependency. -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>com.github.spotbugs</groupId>
+                <artifactId>spotbugs-maven-plugin</artifactId>
+                <version>4.8.6.4</version>
+                <configuration>
+                    <effort>Max</effort>
+                    <threshold>Medium</threshold>
+                    <includeTests>false</includeTests>
+                    <plugins>
+                        <plugin>
+                            <groupId>com.h3xstream.findsecbugs</groupId>
+                            <artifactId>findsecbugs-plugin</artifactId>
+                            <version>1.13.0</version>
+                        </plugin>
+                    </plugins>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>
