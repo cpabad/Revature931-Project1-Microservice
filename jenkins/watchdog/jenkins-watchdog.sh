@@ -48,9 +48,9 @@ notify() {
 
 if [ "$CURRENT" != "$LAST_STATE" ]; then
   if [ "$CURRENT" = down ]; then
-    notify ":red_circle: **Jenkins is DOWN** — ${JENKINS_URL} unreachable from $(hostname) at $(date '+%Y-%m-%d %H:%M %Z'). No more pings until it recovers. Try: docker start ers-jenkins"
+    notify "ALERT: **Jenkins is DOWN** — ${JENKINS_URL} unreachable from $(hostname) at $(date '+%Y-%m-%d %H:%M %Z'). No more pings until it recovers. Try: docker start ers-jenkins"
   else
-    notify ":sunny: **Jenkins is back UP** — ${JENKINS_URL} responding again at $(date '+%Y-%m-%d %H:%M %Z')."
+    notify "RECOVERED: **Jenkins is back UP** — ${JENKINS_URL} responding again at $(date '+%Y-%m-%d %H:%M %Z')."
   fi
   echo "$CURRENT" > "$STATE_FILE"
 fi
