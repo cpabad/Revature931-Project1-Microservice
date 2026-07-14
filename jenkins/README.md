@@ -65,24 +65,32 @@ exists the script exits silently, so the cron entry is safe to install first:
 */5 * * * * /home/cpabad/Repo/Revature931-Project1-Microservice/jenkins/watchdog/jenkins-watchdog.sh
 ```
 
-## Implementation checklist — microservice pipeline (Opus, one stage per PR)
+## Implementation checklist — microservice pipeline (Opus implements, Fable verifies)
 
 Done already (Fable, 2026-07-13): docker-agent plumbing (custom image + `group_add`), the whole
-monolith pipeline, the watchdog. Remaining, in order — **the monolith `Jenkinsfile` is the
-working reference for every pattern below** (sidecar DB via `withRun` + network-namespace join,
-warn-then-ratchet via `catchError(buildResult: 'UNSTABLE')`, Discord notify via
-`withCredentials` + curl):
+monolith pipeline, the watchdog. **Process (owner-ruled 2026-07-14): items 2-5 below land
+together as ONE PR; Fable verifies the complete pipeline once, after that PR** — the original
+one-stage-per-PR cadence applied only to item 1. **The monolith `Jenkinsfile` is the working
+reference for every pattern below** (sidecar DB via `withRun`, warn-then-ratchet via
+`catchError(buildResult: 'UNSTABLE')`, Discord notify via `withCredentials` + curl):
 
-1. **Unit tests stage** — TWO Postgres sidecars (`db/auth/init.sql`, `db/reimbursement/init.sql`
-   — these scripts seed themselves via `/docker-entrypoint-initdb.d`, simpler than the
-   monolith's filtered script), maven JDK-21 container joined to their network.
+1. **DONE (branch christian/jenkins-unit-tests, Fable-verified 2026-07-14)** — Unit tests
+   stage: TWO Postgres sidecars on a private bridge network with DNS aliases (`auth-db`,
+   `reimb-db`), seeded from `db/auth/init.sql` / `db/reimbursement/init.sql` by a psql
+   container joined to that network. NOT via `/docker-entrypoint-initdb.d` as originally
+   written here: the docker socket is docker-outside-of-docker, so a sidecar cannot bind-mount
+   a workspace file — the psql-over-network pattern is the only one that works (see the
+   monolith Jenkinsfile header).
 2. **SCA** — Trivy fs over the module poms; HIGH/CRITICAL; `catchError`-UNSTABLE first
    (warn-then-ratchet, owner-ruled), flip to hard-fail after the first triage.
 3. **SAST** — SpotBugs + FindSecBugs maven plugin (Java 17 here, no JDK-8 constraint —
    build-plugin scope only, the ONE allowed pom touch).
-4. **Secrets** — gitleaks over the working tree (`--no-git`), hard fail from day one.
-5. **Discord notify** — copy the monolith's `notifyDiscord` helper verbatim.
-6. *(stage 2, later)* **DAST** — OWASP ZAP baseline against the compose-booted stack, main only.
+4. **Secrets** — gitleaks over the working tree (`--no-git --redact`), hard fail from day one,
+   with a workspace-cache allowlist like the monolith's (`.m2repo/`, `target/` noise).
+5. **Discord notify** — copy the monolith's `notifyDiscord` helper and post blocks verbatim
+   (plain SUCCESS/FAILURE/WARNING/RECOVERED prefixes — no emojis).
+6. *(stage 2, later — NOT part of the bundled PR)* **DAST** — OWASP ZAP baseline against the
+   compose-booted stack, main only.
 
 Every stage must keep the invariant the skeleton established: **the application builds, tests,
 and runs identically whether or not Jenkins exists.** CI observes the code; it never shapes it.
