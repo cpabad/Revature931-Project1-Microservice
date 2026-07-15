@@ -11,6 +11,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.nio.charset.StandardCharsets;
+
 /**
  * Profile self-service, ported from the monolith's UserService.updateProfile with the semantics
  * deliberately cleaned up (see ProfileUpdateResult): one current-password gate for the whole
@@ -40,9 +42,22 @@ public class UserService {
             return ProfileUpdateResult.of(ProfileUpdateResult.Status.NOTHING_TO_UPDATE);
         }
         User user = userRepository.findById(userId).orElseThrow();
+        // An oversized current password can never legitimately match a stored hash (hashes are of
+        // <=72-byte passwords), and letting it reach BCrypt.matches() is exactly the CVE-2025-22228
+        // hole - it could verify on a shared 72-byte prefix. Guard it into the same WRONG_PASSWORD
+        // gate so an oversized value is simply a failed auth, indistinguishable from any other.
+        // https://avd.aquasec.com/nvd/cve-2025-22228
         if (form.currentPassword() == null
+                || exceedsBCrypt72ByteLimit(form.currentPassword())
                 || !passwordEncoder.matches(form.currentPassword(), user.getPassword())) {
             return ProfileUpdateResult.of(ProfileUpdateResult.Status.WRONG_PASSWORD);
+        }
+        // A new password longer than BCrypt's 72-byte input would be silently truncated by encode()
+        // (CVE-2025-22228), so we would store a hash of only its first 72 bytes. Reject the change
+        // instead - checked here, before any mutation, so a rejected form changes nothing.
+        // https://avd.aquasec.com/nvd/cve-2025-22228
+        if (wantsPassword && exceedsBCrypt72ByteLimit(form.newPassword())) {
+            return ProfileUpdateResult.of(ProfileUpdateResult.Status.NEW_PASSWORD_TOO_LONG);
         }
         // conflict checks BEFORE any mutation - a rejected form changes nothing
         if (wantsUsername && userRepository.existsByUsernameAndUserIdNot(form.newUsername(), userId)) {
@@ -65,5 +80,12 @@ public class UserService {
         // UserUpdatedPublisher) - a rollback after this line publishes nothing.
         events.publishEvent(UserProfileUpdatedEvent.from(updated));
         return new ProfileUpdateResult(ProfileUpdateResult.Status.UPDATED, updated);
+    }
+
+    // BCrypt reads at most 72 bytes; spring-security-crypto silently truncates anything beyond
+    // that (CVE-2025-22228). Byte length, not char length - a multi-byte UTF-8 character counts
+    // once per byte, so the limit is reached sooner than the character count suggests.
+    private static boolean exceedsBCrypt72ByteLimit(String password) {
+        return password != null && password.getBytes(StandardCharsets.UTF_8).length > 72;
     }
 }

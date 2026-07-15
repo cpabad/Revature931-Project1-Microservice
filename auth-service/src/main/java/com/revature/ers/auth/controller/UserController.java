@@ -16,8 +16,8 @@ import org.springframework.web.bind.annotation.RestController;
  * Profile self-service. /users/me only - the identity comes from the token's subject, so there
  * is no "update someone else's profile by changing an id" surface at all.
  *
- *   PUT /users/me  -> 200 updated user | 400 nothing to update | 403 wrong current password
- *                     | 409 username/email taken
+ *   PUT /users/me  -> 200 updated user | 400 nothing to update / new password too long
+ *                     | 403 wrong current password | 409 username/email taken
  */
 @RestController
 public class UserController {
@@ -36,7 +36,9 @@ public class UserController {
         // is handled - add a status and this fails to compile until it's mapped) and value-yielding.
         return switch (result.status()) {
             case UPDATED -> ResponseEntity.ok(result.user());
-            case NOTHING_TO_UPDATE -> ResponseEntity.badRequest().build();
+            // Bad request: either nothing was submitted, or the new password exceeds BCrypt's
+            // 72-byte input limit (CVE-2025-22228) and cannot be stored without silent truncation.
+            case NOTHING_TO_UPDATE, NEW_PASSWORD_TOO_LONG -> ResponseEntity.badRequest().build();
             case WRONG_PASSWORD -> ResponseEntity.status(HttpStatus.FORBIDDEN).build();
             case USERNAME_TAKEN, EMAIL_TAKEN -> ResponseEntity.status(HttpStatus.CONFLICT).build();
         };

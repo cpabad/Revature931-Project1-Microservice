@@ -110,6 +110,29 @@ class UserControllerTest {
     }
 
     @Test
+    void changePassword_newPasswordOver72Bytes_is400_andHashUnchanged() throws Exception {
+        // CVE-2025-22228: encode() would silently store a hash of only the first 72 bytes. The
+        // service rejects the change before any mutation - 400, and the stored hash is untouched.
+        String storedBefore = userRepository.findById(3).orElseThrow().getPassword();
+        String tooLong = "a".repeat(73); // one byte over BCrypt's limit
+
+        mockMvc.perform(putAsUser3("{\"currentPassword\": \"" + KNOWN_PASSWORD + "\", \"newPassword\": \"" + tooLong + "\"}"))
+                .andExpect(status().isBadRequest());
+
+        assertEquals(storedBefore, userRepository.findById(3).orElseThrow().getPassword());
+    }
+
+    @Test
+    void changePassword_currentPasswordOver72Bytes_is403() throws Exception {
+        // An oversized current password can never legitimately match; it must read as a failed
+        // auth (403), never reaching BCrypt.matches() where the 72-byte-prefix hole lived.
+        String tooLong = "a".repeat(73);
+
+        mockMvc.perform(putAsUser3("{\"currentPassword\": \"" + tooLong + "\", \"newUsername\": \"whatever\"}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     void noToken_is401() throws Exception {
         mockMvc.perform(put("/users/me")
                         .contentType(MediaType.APPLICATION_JSON)
