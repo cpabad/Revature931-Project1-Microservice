@@ -4,14 +4,19 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <!-- Boot 3.x parent still supplies the dependency BOM + plugin versions to every module.
-         3.3.6 (not .5): Spring Cloud Gateway 4.1.6 calls HttpHeaders.headerSet(), which only
-         exists from Spring Framework 6.1.15 - the version Boot 3.3.6 ships. On 3.3.5 the
-         gateway starts fine and then throws NoSuchMethodError on the FIRST proxied request. -->
+    <!-- Boot 3.x parent supplies the dependency BOM + plugin versions to every module.
+         Bumped 3.3.6 -> 3.5.3 for the CVE backlog: the 3.3 line is out of OSS support, and the
+         109 root-pom HIGH/CRITICAL findings were BOM-managed transitives of the old train, so the
+         parent bump IS the fix (do not pin individual transitives). This also clears CVE-2025-22228:
+         Boot 3.3.x managed spring-security-crypto 6.3.x (vulnerable BCrypt.matches); 3.5.x manages
+         6.5.x, which carries the 6.4.4+ fix. https://avd.aquasec.com/nvd/cve-2025-22228
+         The old 3.3.6 pin was for Spring Cloud Gateway's HttpHeaders.headerSet() call, which needs
+         Spring Framework >= 6.1.15; Boot 3.5.x ships 6.2.x, so that method is present and the pin
+         reason no longer applies. Stay on the 3.5 line - a new major needs its own ruling. -->
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.6</version>
+        <version>3.5.3</version>
         <relativePath/>
     </parent>
 
@@ -33,8 +38,9 @@
 
     <properties>
         <java.version>17</java.version>
-        <!-- Spring Cloud release train compatible with Boot 3.3.x (Leyton). -->
-        <spring-cloud.version>2023.0.5</spring-cloud.version>
+        <!-- Spring Cloud release train matched to Boot 3.5.x (2025.0.0), bumped from 2023.0.5 with
+             the parent so the gateway's managed dependencies come from the supported train. -->
+        <spring-cloud.version>2025.0.0</spring-cloud.version>
     </properties>
 
     <!-- Import the Spring Cloud BOM so the gateway module can name spring-cloud-starter-gateway
