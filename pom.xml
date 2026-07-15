@@ -5,18 +5,23 @@
     <modelVersion>4.0.0</modelVersion>
 
     <!-- Boot 3.x parent supplies the dependency BOM + plugin versions to every module.
-         Bumped 3.3.6 -> 3.5.3 for the CVE backlog: the 3.3 line is out of OSS support, and the
+         Bumped 3.3.6 -> latest 3.5.x for the CVE backlog: the 3.3 line is out of OSS support, and the
          109 root-pom HIGH/CRITICAL findings were BOM-managed transitives of the old train, so the
          parent bump IS the fix (do not pin individual transitives). This also clears CVE-2025-22228:
          Boot 3.3.x managed spring-security-crypto 6.3.x (vulnerable BCrypt.matches); 3.5.x manages
          6.5.x, which carries the 6.4.4+ fix. https://avd.aquasec.com/nvd/cve-2025-22228
+         Pinned to the LATEST 3.5.x patch, not 3.5.3: a Trivy rescan of 3.5.3 still flagged newer
+         HIGH/CRITICAL advisories that had since landed against it (spring-boot CVE-2026-40973,
+         spring-core CVE-2025-41249, spring-kafka CVE-2026-41731, tomcat-embed, kafka-clients/lz4,
+         netty, jackson, postgresql) - all BOM-managed, all cleared by moving to the newest patch.
+         Re-pin to the newest 3.5.x when you next touch this and rescan; that is the standing routine.
          The old 3.3.6 pin was for Spring Cloud Gateway's HttpHeaders.headerSet() call, which needs
          Spring Framework >= 6.1.15; Boot 3.5.x ships 6.2.x, so that method is present and the pin
          reason no longer applies. Stay on the 3.5 line - a new major needs its own ruling. -->
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.5.3</version>
+        <version>3.5.16</version>
         <relativePath/>
     </parent>
 
@@ -38,9 +43,11 @@
 
     <properties>
         <java.version>17</java.version>
-        <!-- Spring Cloud release train matched to Boot 3.5.x (2025.0.0), bumped from 2023.0.5 with
-             the parent so the gateway's managed dependencies come from the supported train. -->
-        <spring-cloud.version>2025.0.0</spring-cloud.version>
+        <!-- Spring Cloud release train matched to Boot 3.5.x (the 2025.0.x line), bumped from
+             2023.0.5 with the parent so the gateway's managed dependencies come from the supported
+             train. Kept on the latest 2025.0.x patch alongside the parent so gateway transitives
+             (spring-cloud-gateway-server, its netty stack) pick up their advisory fixes too. -->
+        <spring-cloud.version>2025.0.3</spring-cloud.version>
     </properties>
 
     <!-- Import the Spring Cloud BOM so the gateway module can name spring-cloud-starter-gateway
