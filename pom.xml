@@ -75,6 +75,10 @@
                     <effort>Max</effort>
                     <threshold>Medium</threshold>
                     <includeTests>false</includeTests>
+                    <!-- Triaged suppressions (one pinned LDAP false positive + the reactor-wide
+                         EI_EXPOSE design decision), each justified inline in the filter. Resolved
+                         from the reactor root so every module shares one filter. -->
+                    <excludeFilterFile>${session.executionRootDirectory}/spotbugs-exclude.xml</excludeFilterFile>
                     <plugins>
                         <plugin>
                             <groupId>com.h3xstream.findsecbugs</groupId>
