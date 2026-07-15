@@ -7,10 +7,17 @@
  * the controller only holds the docker CLI. Maven cache is workspace-local (-Dmaven.repo.local),
  * so it survives between builds without the root-owned named-volume permission headaches.
  *
- * Scan policy (owner-ruled, same as the monolith): WARN-THEN-RATCHET. SCA and SAST findings
- * mark the build UNSTABLE (yellow) — visible, never ignored, but not red — until the initial
- * backlog is triaged; then delete the catchError wrappers to make them hard gates. The secrets
- * scan is a hard RED from day one: a credential in the working tree is never a warning.
+ * Scan policy (owner-ruled, same as the monolith): WARN-THEN-RATCHET — and as of 2026-07-15 the
+ * ratchet is DONE. SCA (Trivy) and SAST (SpotBugs) are now HARD GATES: a HIGH/CRITICAL CVE or an
+ * untriaged SpotBugs finding turns the build RED, exactly like the secrets scan. They spent one
+ * generation in warn-mode (UNSTABLE/yellow) only to surface the initial backlog without blocking;
+ * that backlog is cleared (Boot 3.5.x/Spring Cloud 2025.0.x took SCA to 0 unignored HIGH/CRITICAL;
+ * the 49 SpotBugs findings are triaged in spotbugs-exclude.xml), so the catchError wrappers are
+ * gone. Residual, genuinely-unfixable findings live in .trivyignore / spotbugs-exclude.xml WITH a
+ * justification — never back behind a warn wrapper (warn-mode also masks a scanner CRASH as the
+ * same yellow a real finding gives, which is exactly how build 1 of the monolith hid a dead scan).
+ * The secrets scan has been a hard RED from day one: a credential in the working tree is never a
+ * warning.
  *
  * Infra notes (mirrors the monolith header):
  *   - Controller runs in Docker with the host socket (docker-outside-of-docker). Workspace paths
@@ -149,10 +156,12 @@ pipeline {
           // into a FATAL. Skip the two workspace caches (.m2 = the Maven repo we resolve FROM, not
           // a scan target; .trivy-cache = Trivy's own vuln DB) and .git, so we scan OUR modules.
           docker.image('aquasec/trivy:latest').inside("--entrypoint='' -e HOME=$WORKSPACE -e TRIVY_CACHE_DIR=$WORKSPACE/.trivy-cache") {
-            catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE',
-                       message: 'SCA findings (HIGH/CRITICAL) — warn-mode; see log. Ratchet: delete this catchError.') {
-              sh 'trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --no-progress --skip-dirs .m2 --skip-dirs .trivy-cache --skip-dirs .git .'
-            }
+            // RATCHETED to a hard gate (2026-07-15): the backlog is cleared - the Boot 3.5.x /
+            // Spring Cloud 2025.0.x bump took every module to 0 unignored HIGH/CRITICAL (verified
+            // offline). --exit-code 1 now fails the build on any new finding OR a scanner crash;
+            // both are RED. Anything unfixable belongs in a .trivyignore with justification, not
+            // back in a catchError.
+            sh 'trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --no-progress --skip-dirs .m2 --skip-dirs .trivy-cache --skip-dirs .git .'
           }
         }
       }
@@ -166,12 +175,13 @@ pipeline {
           // plugin block; because that block has no <executions>, `mvn spotbugs:check` is the only
           // thing that triggers analysis — a plain build stays identical.
           docker.image(env.MAVEN_IMAGE).inside {
-            catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE',
-                       message: 'SAST findings — warn-mode; see log. Ratchet: delete this catchError.') {
-              // --fail-at-end: analyze EVERY module before failing, so one module's findings don't
-              // hide the rest (a plain reactor stops at the first failure).
-              sh "$MVN -DskipTests compile spotbugs:check --fail-at-end"
-            }
+            // RATCHETED to a hard gate (2026-07-15): the 49 SpotBugs findings are triaged - the one
+            // security-pattern hit (LDAP_INJECTION, a false positive) and the EI_EXPOSE noise are
+            // suppressed with per-entry justification in spotbugs-exclude.xml, so spotbugs:check is
+            // clean. It now fails the build on any NEW finding of any other pattern.
+            // --fail-at-end: analyze EVERY module before failing, so one module's findings don't
+            // hide the rest (a plain reactor stops at the first failure).
+            sh "$MVN -DskipTests compile spotbugs:check --fail-at-end"
           }
         }
       }
@@ -225,7 +235,10 @@ EOF
       script { notifyDiscord("FAILURE: **${env.JOB_NAME} #${env.BUILD_NUMBER}** failed on `${env.GIT_BRANCH ?: 'main'}` — author: ${blame()} — ${env.BUILD_URL}") }
     }
     unstable {
-      script { notifyDiscord("WARNING: **${env.JOB_NAME} #${env.BUILD_NUMBER}** is UNSTABLE — a security scan reported findings (warn-mode) — ${env.BUILD_URL}") }
+      // Security scans are hard gates now (they go RED, not yellow), so UNSTABLE no longer means
+      // "scan findings" - it points at something softer (e.g. a flaky/ignored test result). Kept as
+      // a distinct signal from FAILURE so a yellow build still pages, without implying a warn-mode scan.
+      script { notifyDiscord("WARNING: **${env.JOB_NAME} #${env.BUILD_NUMBER}** is UNSTABLE — see the build log — ${env.BUILD_URL}") }
     }
     fixed {
       script { notifyDiscord("RECOVERED: **${env.JOB_NAME} #${env.BUILD_NUMBER}** is passing again — ${env.BUILD_URL}") }
