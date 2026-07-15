@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.revature.ers.event.RequestSubmissionEvent;
 import com.revature.ers.event.UserProfileUpdatedEvent;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
@@ -48,7 +49,14 @@ public class KafkaConfig {
     /** Boot wires the single CommonErrorHandler bean into the auto-configured listener container. */
     @Bean
     public DefaultErrorHandler kafkaErrorHandler(KafkaOperations<Object, Object> deadLetterTemplate) {
-        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(deadLetterTemplate);
+        // Pin the DLT destination to <topic>.DLT explicitly. spring-kafka's default resolver
+        // changed its suffix from ".DLT" to "-dlt" in the 3.3.x line (pulled in by the Spring Boot
+        // 3.5.3 bump), which would silently route dead letters to an unread topic. ".DLT" is this
+        // service's published contract (README, the @EmbeddedKafka topic, this class's javadoc), so
+        // we own the resolver rather than depend on a framework default that can move under us. The
+        // recoverer still downgrades the partition to -1 if the DLT has fewer partitions than source.
+        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(deadLetterTemplate,
+                (record, exception) -> new TopicPartition(record.topic() + ".DLT", record.partition()));
         return new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 2L)); // 1 try + 2 retries
     }
 

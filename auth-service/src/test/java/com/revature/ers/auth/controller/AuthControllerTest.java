@@ -90,6 +90,32 @@ class AuthControllerTest {
                 .andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void login_exactly72BytePassword_returnsToken() throws Exception {
+        // Boundary pin for the CVE-2025-22228 guard: 72 bytes IS BCrypt's limit, not over it, so a
+        // genuine 72-byte password must still authenticate (the guard rejects >72, not >=72).
+        String pw = "a".repeat(72);
+        when(users.findByUsername("employee1")).thenReturn(Optional.of(employeeWithPassword(pw)));
+
+        mockMvc.perform(post("/login").contentType(APPLICATION_JSON).content(body("employee1", pw)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.token").exists());
+    }
+
+    @Test
+    void login_over72BytePassword_sharedPrefix_isUnauthorized() throws Exception {
+        // CVE-2025-22228: BCrypt reads only the first 72 bytes. The stored hash is of a 72-byte
+        // password; a LONGER password sharing those 72 bytes would be truncated to the same input
+        // and verify - the exact false-accept the vulnerability describes. The guard rejects the
+        // oversized submission before it can reach matches(), yielding the same 401 as any bad login.
+        String stored = "a".repeat(72);
+        String oversizedSamePrefix = stored + "SUFFIX";
+        when(users.findByUsername("employee1")).thenReturn(Optional.of(employeeWithPassword(stored)));
+
+        mockMvc.perform(post("/login").contentType(APPLICATION_JSON).content(body("employee1", oversizedSamePrefix)))
+                .andExpect(status().isUnauthorized());
+    }
+
     /**
      * End-to-end crypto: a token minted by the real TokenService is accepted by the real filter
      * chain + JwtDecoder on a secured route. This is the path the .with(jwt()) mock skips, so it

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SpotBugs / FindSecBugs exclude filter for the ERS reactor.
+
+  Two triaged categories are filtered so that once the SAST stage ratchets from warn-mode
+  to a hard gate (mvn spotbugs:check), the gate reflects UNTRIAGED findings only. Nothing
+  here is a blanket "ignore security" switch: the LDAP suppression is pinned to a single
+  method proven to be a false positive, and the EI_EXPOSE exclusion is a codebase-wide
+  design decision recorded below. A genuinely new finding of any other pattern - or an
+  LDAP_INJECTION anywhere but the one method below - still fails the gate.
+
+  Wired via spotbugs-maven-plugin's <excludeFilterFile> in the root pom.
+-->
+<FindBugsFilter>
+
+    <!--
+      FALSE POSITIVE - not an LDAP query. PartnerResolver.commonNameOf uses javax.naming.ldap.LdapName
+      purely as an RFC 2253 parser to pull the CN out of an X.500 subject string. The string comes from
+      an X509Certificate that Tomcat's JSSE layer already verified against our CA during the mTLS
+      handshake (server.ssl.client-auth=need) BEFORE this code runs, and nothing is ever sent to an LDAP
+      directory - there is no injection sink. FindSecBugs flags any `new LdapName(externalString)` on
+      taint alone. The remediation it implies (Rdn.escapeValue) is for BUILDING a DN to query; escaping
+      the input before PARSING would corrupt it. Scoped to this one method so any real LDAP_INJECTION
+      elsewhere still trips the gate. CVE n/a (detector heuristic). https://find-sec-bugs.github.io/bugs.htm#LDAP_INJECTION
+    -->
+    <Match>
+        <Class name="com.revature.ers.soap.security.PartnerResolver"/>
+        <Method name="commonNameOf"/>
+        <Bug pattern="LDAP_INJECTION"/>
+    </Match>
+
+    <!--
+      ACCEPTED - design noise, not a vulnerability in this system. EI_EXPOSE_REP / EI_EXPOSE_REP2 fire
+      on getters/setters that return or store a mutable reference (java.util.Date, or a reference to
+      another entity) without a defensive copy. Every hit is on a JPA @Entity model (User, Request,
+      Reimbursement, SupervisorApproval, Hierarchy, EventLocation, ...) or a DTO/messaging holder.
+      Defensive copies on JPA accessors would fight Hibernate's own managed-reference / dirty-checking
+      model and buy no safety in an internal service where these objects are not shared across trust
+      boundaries. Excluded reactor-wide by pattern so the security detectors stay in force without this
+      one stylistic pattern permanently reddening the gate. Revisit if any of these types is ever
+      exposed directly to untrusted callers.
+    -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+    </Match>
+
+</FindBugsFilter>

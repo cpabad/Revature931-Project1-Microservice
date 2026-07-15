@@ -11,6 +11,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.nio.charset.StandardCharsets;
+
 /**
  * The issuer endpoint. Replaces the monolith's session-creating login: instead of populating an
  * HttpSession, a successful login returns a signed JWT the client carries on every later request.
@@ -38,6 +40,15 @@ public class AuthController {
 
     @PostMapping("/login")
     public ResponseEntity<LoginResponse> login(@RequestBody LoginRequest credentials) {
+        // Maximum password length established per CVE-2025-22228: BCrypt reads only the first 72
+        // bytes of its input, so matches() would return true for ANY longer password whose first
+        // 72 bytes match a stored hash. Reject oversized input up front - the fixed library (Spring
+        // Security 6.5.x via the Boot 3.5 bump) closes the hole, this is defense in depth. Same
+        // empty 401 as any bad credential: the endpoint never says WHY it rejected you.
+        // https://avd.aquasec.com/nvd/cve-2025-22228
+        if (exceedsBCrypt72ByteLimit(credentials.password())) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
         return users.findByUsername(credentials.username())
                 // BCrypt verify: hash the submitted password with the stored salt and compare -
                 // never compare raw text, never decrypt (bcrypt is one-way).
@@ -49,5 +60,12 @@ public class AuthController {
                         user.getRole().getRole(),
                         tokenService.getTtlSeconds())))
                 .orElseGet(() -> ResponseEntity.status(HttpStatus.UNAUTHORIZED).build());
+    }
+
+    // BCrypt reads at most 72 bytes; spring-security-crypto silently truncates anything beyond
+    // that (CVE-2025-22228). Byte length, not char length - a multi-byte UTF-8 character counts
+    // once per byte, so the limit is reached sooner than the character count suggests.
+    private static boolean exceedsBCrypt72ByteLimit(String password) {
+        return password != null && password.getBytes(StandardCharsets.UTF_8).length > 72;
     }
 }
