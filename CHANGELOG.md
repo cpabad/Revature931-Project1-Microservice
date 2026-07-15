@@ -355,3 +355,53 @@ Live-verified on the K3s slice: key mounted, boot log shows `RS256 pair loaded f
 unchanged (`8RhT8SaP…`). Under the ephemeral scheme that same call was a guaranteed 401. Also
 flipped `imagePullPolicy` to `Always` in both deploy paths: with a mutable `:latest` tag,
 `IfNotPresent` would serve the node's cached build forever after a re-push.
+
+---
+
+## Security remediation — CVE gate hard-cutover (2026-07-15)
+
+Jenkins build 4 went red and surfaced the whole security-scan backlog at once. The RED itself
+was a **pipeline bug, not a finding**: the secrets stage wrote its gitleaks allowlist through a
+Groovy `sh '''…'''` heredoc, which ate one backslash layer, so the regex `JwkConfigTest\\.java`
+reached disk as `\.java` — an invalid TOML escape — and gitleaks died with `FTL … invalid
+escaped character U+002E` before scanning anything. Fixed by writing the dot as the character
+class `[.]`, which needs no backslash and so survives the Groovy → shell → TOML chain. Validated
+locally by generating the config exactly as the pipeline does and running gitleaks against it:
+config loads, `no leaks found`.
+
+Behind that bug, both analysis scans had done their job in warn-mode: SCA (Trivy) flagged 218
+HIGH/CRITICAL and SAST (SpotBugs + FindSecBugs) 49 findings. Remediation, following the monolith
+as the worked example:
+
+- **Dependency CVEs — bump the BOMs, not the transitives.** `spring-boot-starter-parent`
+  3.3.6 → 3.5.16 and the Spring Cloud train 2023.0.5 → 2025.0.3. The 3.3 line is out of OSS
+  support and nearly all 218 findings were BOM-managed transitives of the old train, so the
+  parent bump is the fix. A rescan of the interim 3.5.3 still returned 38 HIGH/CRITICAL from
+  advisories that had since landed against it, so we moved to the latest 3.5.x/2025.0.x patch —
+  the iterate-until-zero routine. End state: **0 unignored HIGH/CRITICAL across all five poms**,
+  no `.trivyignore` needed.
+- **CVE-2025-22228 (BCrypt 72-byte truncation), defense in depth.** The bump already pulls the
+  fixed spring-security-crypto, but the input limit is now explicit in code: guards in
+  `AuthController.login` and `UserService`'s change-password path reject a password whose UTF-8
+  length exceeds 72 bytes before it reaches BCrypt, each with the CVE + advisory comment at the
+  guard. `matches()` truncates silently, so a longer password sharing a stored 72-byte prefix
+  would otherwise verify. New status `NEW_PASSWORD_TOO_LONG` → 400; oversized current password
+  reads as the same 403 as any wrong password. Four boundary tests (exactly-72 authenticates;
+  shared-prefix over-length rejected; oversized new/current password paths).
+- **The spring-kafka fallout, caught by a test.** spring-kafka moved 3.2.x → 3.3.x with the
+  bump, and its `DeadLetterPublishingRecoverer` default DLT suffix changed `.DLT` → `-dlt`,
+  silently rerouting dead letters to an unread topic. `KafkaConfig` now pins the destination
+  resolver to `<topic>.DLT` — the service's published contract — rather than depend on a
+  framework default that can move.
+- **SAST triage.** New `spotbugs-exclude.xml`: the one security-pattern finding
+  (`LDAP_INJECTION` in `PartnerResolver`) is a false positive — `LdapName` is used to *parse* an
+  already-CA-verified certificate subject, not to build an LDAP query — suppressed pinned to that
+  one method; the ~48 `EI_EXPOSE_REP/REP2` findings on JPA entities/DTOs are excluded reactor-wide
+  as design noise. Each exclusion carries its rationale inline. `spotbugs:check` is now clean.
+- **Ratchet.** With both backlogs cleared, the `catchError` warn-mode wrappers come off: SCA and
+  SAST are **hard gates** — a new HIGH/CRITICAL CVE or an untriaged SpotBugs finding is RED, like
+  the secrets scan has always been. The lesson kept in the Jenkinsfile header: warn-mode also
+  masks a scanner *crash* as the same yellow a real finding gives, so unfixables go in
+  `.trivyignore` / `spotbugs-exclude.xml` with justification, never back behind a warn wrapper.
+
+Full reactor stays green on JDK 21: **63 tests** (the 59 prior plus the 4 BCrypt boundary tests).
