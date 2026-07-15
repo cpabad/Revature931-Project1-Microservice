@@ -194,3 +194,43 @@ seeding, and warn-then-ratchet policy all behaved as designed in build 4. One de
 gitleaks TOML escaping bug above (Groovy heredoc backslash consumption), which made the hard
 gate fire on a config parse error rather than a leak. SCA and SAST warn-modes surfaced real
 backlogs exactly as intended. Verdict: merge was correct; this document is the follow-through.
+
+## Post-implementation addendum — review verdict (Fable, 2026-07-15)
+
+**Status: IMPLEMENTED AND MERGED** — PR #12 (8 commits, `3a58a89..83d9a28`), branch deleted per
+the ground rule. Reviewed against the plan above and the code itself (guards, filter, Jenkinsfile
+read first-hand, not from the implementation report). Verdict: **approved**. Two reconciliations
+and one process note, recorded so this doc stays truthful:
+
+- **Versions (supersedes Step 2's numbers):** shipped `spring-boot-starter-parent` **3.5.16** and
+  Spring Cloud **2025.0.3**, not the 3.5.3/2025.0.0 named above. Authorized by Step 2's own
+  "take the latest patch when you run" clause — by implementation day a fresh-DB Trivy rescan of
+  3.5.3 showed **38 new HIGH/CRITICAL** (spring-boot CVE-2026-40973, spring-core CVE-2025-41249,
+  spring-kafka CVE-2026-41731, tomcat-embed, kafka-clients, lz4, netty, jackson, postgresql,
+  bouncycastle). End state: **0 unignored HIGH/CRITICAL, no `.trivyignore` entries needed.**
+  The dated version numbers in Step 2 are historical; the standing rule is the clause, not the pin.
+- **Unplanned fix this plan missed:** the bump moved spring-kafka 3.2.x → 3.3.x, whose
+  `DeadLetterPublishingRecoverer` default destination suffix changed `.DLT` → `-dlt` — dead
+  letters published *successfully* to an auto-created topic nobody reads. Caught by
+  `KafkaIntakeResilienceTest` (asserting on the DLT by name — the test design earned its keep);
+  fixed by pinning the destination resolver to `<topic>.DLT`, the published contract. Correct
+  call: the contract owns the name, never a framework default.
+- **Ratchet outcome:** SCA hard gate per Step 5, and SAST's conditional was met
+  (`spotbugs:check` clean after Step 4), so **both** are hard gates now.
+- **Verification evidence:** suite **63/63** (the 59 prior + 4 BCrypt boundary tests), Trivy
+  fresh-DB (CI-equivalent, no `--skip-db-update`) exit 0, `spotbugs:check` BugInstance 0 in all
+  four modules, gitleaks config-on-disk self-test loads and reports no leaks.
+- **Process note (for the record, not fixable post-merge):** `353db58` was committed with its
+  test run deferred and is red in isolation (the DLT regression); the fix is the next commit
+  (`952d32c`). A future `git bisect` landing on it sees a failing suite. Standing lesson: a
+  dependency-bump commit carries its fallout or its green suite — the verify databases were up.
+
+**Open items after this addendum:**
+1. **Jenkins Build Now (owner)** — every proof above is local; the post-merge pipeline run is
+   the real gate, expected fully GREEN with SCA+SAST hard.
+2. **Revisit conditions:** DLT partition parity if `reimbursement.request.submitted` is ever
+   provisioned with >1 partition (the pinned resolver forwards the source partition);
+   `spotbugs:check` must be invoked from the reactor root (`${session.executionRootDirectory}`
+   resolves the shared exclude filter relative to the invocation dir); a newly published CVE
+   now reds the build with zero code change — that is the design; the outlets are a bump or a
+   justified `.trivyignore` entry, never a restored `catchError`.
