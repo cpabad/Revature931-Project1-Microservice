@@ -205,7 +205,10 @@ paths = [
   # False positive: line 31 is a "-----BEGIN PRIVATE KEY-----" PEM-armor STRING in a test that
   # GENERATES a fresh RSA keypair at runtime - no secret is committed. The ideal long-term fix is
   # an inline `gitleaks:allow` on that line, but that edits app code (out of this PR's scope).
-  "auth-service/src/test/java/com/revature/ers/auth/config/JwkConfigTest\\.java",
+  # [.] matches a literal dot without a backslash, so it survives the Groovy -> shell -> TOML
+  # escaping chain that turned a backslash-dot into an invalid TOML escape and killed build 4
+  # (FTL: invalid escaped character U+002E). Do NOT "fix" this by adding backslashes.
+  "auth-service/src/test/java/com/revature/ers/auth/config/JwkConfigTest[.]java",
 ]
 EOF
           '''
